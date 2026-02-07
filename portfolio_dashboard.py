@@ -61,135 +61,121 @@ def setup_page():
     
     st.markdown("""
     <style>
-        /* Modern clean aesthetic */
-        .main { 
+        /* Force white background everywhere */
+        .main, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
             background-color: #ffffff !important;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
         
-        h1, h2, h3 { 
-            font-weight: 600 !important;
-            letter-spacing: -0.5px;
+        /* Ensure all text is dark and visible */
+        .main * {
             color: #1a1a1a !important;
         }
         
-        /* Fix metric cards - ensure visibility */
-        [data-testid="stMetric"] {
-            background: #f8f9fa !important;
-            border: 1px solid #e9ecef !important;
-            border-radius: 12px;
-            padding: 1.25rem !important;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-            transition: all 0.3s ease;
+        /* Headers - dark text, no blur */
+        h1, h2, h3, h4, h5, h6 { 
+            font-weight: 600 !important;
+            letter-spacing: -0.5px !important;
+            color: #1a1a1a !important;
+            background-color: transparent !important;
+            text-shadow: none !important;
         }
         
-        /* Fix metric values - ensure text is visible */
+        /* Metric cards - light gray background, dark text */
+        [data-testid="stMetric"] {
+            background-color: #f8f9fa !important;
+            border: 1px solid #dee2e6 !important;
+            border-radius: 12px !important;
+            padding: 1.25rem !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+        }
+        
+        [data-testid="stMetric"] * {
+            color: #1a1a1a !important;
+        }
+        
         [data-testid="stMetric"] label {
-            color: #495057 !important;
             font-size: 0.875rem !important;
             font-weight: 600 !important;
         }
         
         [data-testid="stMetric"] [data-testid="stMetricValue"] {
-            color: #1a1a1a !important;
             font-size: 1.5rem !important;
             font-weight: 700 !important;
         }
         
-        [data-testid="stMetric"] [data-testid="stMetricDelta"] {
-            font-size: 0.875rem !important;
-            font-weight: 600 !important;
-        }
-        
-        [data-testid="stMetric"]:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-            transform: translateY(-2px);
-        }
-        
-        /* Modern buttons */
+        /* Buttons - white background, dark text */
         .stButton>button {
-            border-radius: 8px;
-            font-weight: 500;
-            border: 1px solid #dee2e6;
-            background-color: #ffffff;
-            color: #495057 !important;
-            transition: all 0.2s ease;
-            padding: 0.5rem 1.5rem;
+            background-color: #ffffff !important;
+            color: #1a1a1a !important;
+            border: 2px solid #dee2e6 !important;
+            border-radius: 8px !important;
+            font-weight: 600 !important;
+            padding: 0.5rem 1.5rem !important;
         }
         
         .stButton>button:hover {
-            border-color: #2E4053;
-            background-color: #2E4053;
-            color: white !important;
-            box-shadow: 0 4px 12px rgba(46, 64, 83, 0.2);
+            background-color: #2E4053 !important;
+            color: #ffffff !important;
+            border-color: #2E4053 !important;
         }
         
         /* Radio buttons */
-        .stRadio > div {
-            background-color: #f8f9fa;
-            padding: 0.5rem;
-            border-radius: 8px;
+        .stRadio label {
+            color: #1a1a1a !important;
         }
         
-        /* Fix tab labels */
+        /* Tabs - ensure visibility */
         .stTabs [data-baseweb="tab-list"] {
-            gap: 8px;
+            background-color: #f8f9fa !important;
         }
         
         .stTabs [data-baseweb="tab"] {
             color: #495057 !important;
-            font-weight: 600;
+            background-color: transparent !important;
         }
         
         .stTabs [aria-selected="true"] {
-            color: #2E4053 !important;
+            color: #1a1a1a !important;
+            background-color: #ffffff !important;
+            font-weight: 700 !important;
         }
         
-        /* Data tables - fix visibility */
+        /* Tables - white background, dark text */
         .dataframe {
-            border-radius: 8px;
-            overflow: hidden;
+            background-color: #ffffff !important;
             color: #1a1a1a !important;
         }
         
         .dataframe thead tr th {
             background-color: #f8f9fa !important;
             color: #1a1a1a !important;
-            font-weight: 600 !important;
+            font-weight: 700 !important;
         }
         
         .dataframe tbody tr td {
             color: #1a1a1a !important;
+            background-color: #ffffff !important;
         }
         
-        /* Fix text visibility on mobile */
-        p, span, div {
-            color: #1a1a1a !important;
-        }
-        
-        /* Ensure captions are visible */
-        .caption {
+        /* Captions and small text */
+        .caption, small {
             color: #6c757d !important;
         }
         
-        /* Hide Streamlit branding */
-        footer, #MainMenu { visibility: hidden; }
-        
-        /* Status indicators */
-        .status-indicator {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 8px;
+        /* Info/warning/success boxes */
+        .stAlert {
+            background-color: #ffffff !important;
         }
-        .status-live { background-color: #28a745; }
-        .status-cached { background-color: #ffc107; }
         
-        /* Mobile-specific fixes */
+        /* Hide Streamlit branding */
+        footer, #MainMenu, header {
+            visibility: hidden !important;
+        }
+        
+        /* Mobile optimizations */
         @media (max-width: 768px) {
             [data-testid="stMetric"] {
-                padding: 1rem !important;
+                padding: 0.75rem !important;
             }
             
             [data-testid="stMetric"] [data-testid="stMetricValue"] {
@@ -197,15 +183,15 @@ def setup_page():
             }
             
             h1 {
-                font-size: 1.75rem !important;
-            }
-            
-            h2 {
                 font-size: 1.5rem !important;
             }
             
-            h3 {
+            h2 {
                 font-size: 1.25rem !important;
+            }
+            
+            h3 {
+                font-size: 1.1rem !important;
             }
         }
     </style>
@@ -378,8 +364,15 @@ class PortfolioAnalytics:
         """Calculate portfolio-level statistics"""
         total_mv = df['MV_AUD'].sum()
         total_cost = df['Cost_AUD'].sum()
-        total_pnl = total_mv - total_cost
-        pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+        
+        # Total P&L = Current Market Value - Capital Injected
+        total_pnl = total_mv - capital
+        pnl_pct = (total_pnl / capital * 100) if capital > 0 else 0
+        
+        # Stock performance P&L (for reference)
+        stock_pnl = total_mv - total_cost
+        stock_pnl_pct = (stock_pnl / total_cost * 100) if total_cost > 0 else 0
+        
         cash_value = df[df['Ticker'] == 'Cash']['MV_AUD'].sum()
         equity_value = total_mv - cash_value
         
@@ -391,8 +384,10 @@ class PortfolioAnalytics:
             'total_mv': total_mv,
             'total_cost': total_cost,
             'capital_injected': capital,
-            'total_pnl': total_pnl,
+            'total_pnl': total_pnl,  # This is MV - Capital Injected
             'pnl_pct': pnl_pct,
+            'stock_pnl': stock_pnl,  # This is performance-based P&L
+            'stock_pnl_pct': stock_pnl_pct,
             'num_positions': len(df[df['Ticker'] != 'Cash']),
             'cash_value': cash_value,
             'cash_pct': (cash_value / total_mv * 100) if total_mv > 0 else 0,
@@ -710,7 +705,7 @@ class Dashboard:
                 f"${stats['total_pnl']:,.0f}",
                 f"{stats['pnl_pct']:.2f}%",
                 delta_color=delta_color,
-                help="Total profit or loss"
+                help="Total Value - Capital Injected"
             )
         
         with col3:
@@ -740,21 +735,23 @@ class Dashboard:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
+            # Show stock performance P&L
+            delta_color = "normal" if stats['stock_pnl'] >= 0 else "inverse"
             st.metric(
-                "Winners",
-                f"{stats['num_winners']}",
-                f"+${stats['winners_value']:,.0f}",
-                delta_color="normal",
-                help="Profitable positions"
+                "Stock Performance",
+                f"${stats['stock_pnl']:,.0f}",
+                f"{stats['stock_pnl_pct']:.2f}%",
+                delta_color=delta_color,
+                help="Gains/losses from stock price changes"
             )
         
         with col2:
             st.metric(
-                "Losers", 
-                f"{stats['num_losers']}",
-                f"${stats['losers_value']:,.0f}",
-                delta_color="inverse",
-                help="Loss-making positions"
+                "Winners", 
+                f"{stats['num_winners']}",
+                f"+${stats['winners_value']:,.0f}",
+                delta_color="normal",
+                help="Profitable positions"
             )
         
         with col3:
