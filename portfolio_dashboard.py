@@ -337,9 +337,13 @@ class PortfolioAnalytics:
                 main,
                 pd.Series([others.sum()], index=[other_label])
             ])
-            return result.reset_index()
+            result_df = result.reset_index()
+            result_df.columns = ['Ticker', 'MV_AUD']
+            return result_df
         
-        return agg.reset_index()
+        agg_df = agg.reset_index()
+        agg_df.columns = ['Ticker', 'MV_AUD']
+        return agg_df
 
 # ============================================================================
 # VISUALIZATION
