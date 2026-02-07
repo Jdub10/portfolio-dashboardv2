@@ -296,16 +296,35 @@ class PortfolioAnalytics:
     def calculate_summary_stats(df: pd.DataFrame, capital: float) -> dict:
         """Calculate portfolio-level statistics"""
         total_mv = df['MV_AUD'].sum()
-        total_pnl = total_mv - capital
-        pnl_pct = (total_pnl / capital * 100) if capital > 0 else 0
+        total_cost = df['Cost_AUD'].sum()
+        total_pnl = total_mv - total_cost
+        pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+        cash_value = df[df['Ticker'] == 'Cash']['MV_AUD'].sum()
+        equity_value = total_mv - cash_value
+        
+        # Winner/Loser analysis
+        winners = df[(df['PnL_AUD'] > 0) & (df['Ticker'] != 'Cash')]
+        losers = df[(df['PnL_AUD'] < 0) & (df['Ticker'] != 'Cash')]
         
         return {
             'total_mv': total_mv,
+            'total_cost': total_cost,
+            'capital_injected': capital,
             'total_pnl': total_pnl,
             'pnl_pct': pnl_pct,
             'num_positions': len(df[df['Ticker'] != 'Cash']),
-            'cash_pct': (df[df['Ticker'] == 'Cash']['MV_AUD'].sum() / total_mv * 100) 
-                        if total_mv > 0 else 0
+            'cash_value': cash_value,
+            'cash_pct': (cash_value / total_mv * 100) if total_mv > 0 else 0,
+            'equity_value': equity_value,
+            'equity_pct': (equity_value / total_mv * 100) if total_mv > 0 else 0,
+            'num_winners': len(winners),
+            'num_losers': len(losers),
+            'winners_value': winners['PnL_AUD'].sum() if not winners.empty else 0,
+            'losers_value': losers['PnL_AUD'].sum() if not losers.empty else 0,
+            'best_performer': winners.nlargest(1, 'PnL_Pct').iloc[0]['Ticker'] if not winners.empty else 'N/A',
+            'best_performer_pct': winners.nlargest(1, 'PnL_Pct').iloc[0]['PnL_Pct'] if not winners.empty else 0,
+            'worst_performer': losers.nsmallest(1, 'PnL_Pct').iloc[0]['Ticker'] if not losers.empty else 'N/A',
+            'worst_performer_pct': losers.nsmallest(1, 'PnL_Pct').iloc[0]['PnL_Pct'] if not losers.empty else 0,
         }
     
     @staticmethod
@@ -427,6 +446,154 @@ class ChartBuilder:
         )
         
         return fig
+    
+    @staticmethod
+    def create_sector_chart(df: pd.DataFrame) -> go.Figure:
+        """Create sector allocation pie chart"""
+        if 'Sector' not in df.columns:
+            return None
+        
+        sector_data = df[df['Ticker'] != 'Cash'].groupby('Sector')['MV_AUD'].sum().sort_values(ascending=False)
+        
+        if sector_data.empty:
+            return None
+        
+        sector_df = sector_data.reset_index()
+        sector_df.columns = ['Sector', 'MV_AUD']
+        
+        fig = px.pie(
+            sector_df,
+            values='MV_AUD',
+            names='Sector',
+            hole=0.5,
+            color_discrete_sequence=config.COLORS_PRIMARY
+        )
+        
+        fig.update_layout(
+            margin=dict(t=40, b=20, l=0, r=0),
+            height=400,
+            showlegend=True,
+            legend=dict(
+                orientation="v",
+                yanchor="middle",
+                y=0.5,
+                xanchor="left",
+                x=1.05,
+                font=dict(size=11)
+            ),
+            title=dict(
+                text="Sector Allocation",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=16, color='#2E4053')
+            )
+        )
+        
+        fig.update_traces(
+            textinfo='label+percent',
+            textposition='inside',
+            textfont_size=11,
+            marker=dict(line=dict(color='white', width=2))
+        )
+        
+        return fig
+    
+    @staticmethod
+    def create_strategy_chart(df: pd.DataFrame) -> go.Figure:
+        """Create strategy role allocation pie chart"""
+        if 'Strategy_Role' not in df.columns and 'Strategy Role' not in df.columns:
+            return None
+        
+        strategy_col = 'Strategy_Role' if 'Strategy_Role' in df.columns else 'Strategy Role'
+        strategy_data = df[df['Ticker'] != 'Cash'].groupby(strategy_col)['MV_AUD'].sum().sort_values(ascending=False)
+        
+        if strategy_data.empty:
+            return None
+        
+        strategy_df = strategy_data.reset_index()
+        strategy_df.columns = ['Strategy', 'MV_AUD']
+        
+        fig = px.pie(
+            strategy_df,
+            values='MV_AUD',
+            names='Strategy',
+            hole=0.5,
+            color_discrete_sequence=config.COLORS_PRIMARY
+        )
+        
+        fig.update_layout(
+            margin=dict(t=40, b=20, l=0, r=0),
+            height=400,
+            showlegend=True,
+            legend=dict(
+                orientation="v",
+                yanchor="middle",
+                y=0.5,
+                xanchor="left",
+                x=1.05,
+                font=dict(size=11)
+            ),
+            title=dict(
+                text="Strategy Allocation",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=16, color='#2E4053')
+            )
+        )
+        
+        fig.update_traces(
+            textinfo='label+percent',
+            textposition='inside',
+            textfont_size=11,
+            marker=dict(line=dict(color='white', width=2))
+        )
+        
+        return fig
+    
+    @staticmethod
+    def create_performance_chart(df: pd.DataFrame) -> go.Figure:
+        """Create top winners vs losers chart"""
+        equity_df = df[df['Ticker'] != 'Cash'].copy()
+        
+        if equity_df.empty:
+            return None
+        
+        # Get top 5 winners and losers
+        winners = equity_df.nlargest(5, 'PnL_AUD')[['Ticker', 'PnL_AUD', 'PnL_Pct']]
+        losers = equity_df.nsmallest(5, 'PnL_AUD')[['Ticker', 'PnL_AUD', 'PnL_Pct']]
+        
+        combined = pd.concat([winners, losers]).sort_values('PnL_AUD')
+        
+        colors = ['#EC7063' if x < 0 else '#48C9B0' for x in combined['PnL_AUD']]
+        
+        fig = go.Figure(data=[
+            go.Bar(
+                x=combined['PnL_AUD'],
+                y=combined['Ticker'],
+                orientation='h',
+                marker_color=colors,
+                text=combined['PnL_Pct'],
+                texttemplate='%{text:.1f}%',
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>P&L: $%{x:,.0f}<br>Return: %{text:.1f}%<extra></extra>'
+            )
+        ])
+        
+        fig.update_layout(
+            title=dict(
+                text="Top Performers",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=16, color='#2E4053')
+            ),
+            xaxis_title="P&L (AUD)",
+            yaxis_title="",
+            height=400,
+            margin=dict(t=40, b=20, l=0, r=20),
+            showlegend=False
+        )
+        
+        return fig
 
 # ============================================================================
 # UI COMPONENTS
@@ -445,7 +612,8 @@ class Dashboard:
         st.title("📊 Portfolio Command Center")
         st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        col1, col2, col3, col4 = st.columns(4)
+        # Primary metrics row
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             st.metric(
@@ -465,43 +633,135 @@ class Dashboard:
         
         with col3:
             st.metric(
+                "Capital Injected",
+                f"${stats['capital_injected']:,.0f}",
+                help="Total capital invested"
+            )
+        
+        with col4:
+            st.metric(
                 "Positions",
                 f"{stats['num_positions']}",
                 f"{stats['cash_pct']:.1f}% cash"
             )
         
-        with col4:
+        with col5:
             st.metric(
                 "AUD/USD",
                 f"{fx_rate:.4f}",
                 help="Current exchange rate"
             )
+        
+        # Secondary metrics row
+        st.markdown("<br>", unsafe_allow_html=True)
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "Winners",
+                f"{stats['num_winners']}",
+                f"+${stats['winners_value']:,.0f}",
+                delta_color="normal"
+            )
+        
+        with col2:
+            st.metric(
+                "Losers", 
+                f"{stats['num_losers']}",
+                f"${stats['losers_value']:,.0f}",
+                delta_color="inverse"
+            )
+        
+        with col3:
+            st.metric(
+                "Best Performer",
+                stats['best_performer'],
+                f"+{stats['best_performer_pct']:.1f}%",
+                delta_color="normal"
+            )
+        
+        with col4:
+            st.metric(
+                "Worst Performer",
+                stats['worst_performer'],
+                f"{stats['worst_performer_pct']:.1f}%",
+                delta_color="inverse"
+            )
     
     def render_charts(self, df: pd.DataFrame):
         """Render portfolio visualization charts"""
         st.markdown("---")
-        st.subheader("📈 Portfolio Composition")
+        st.subheader("📈 Portfolio Analysis")
         
-        col1, col2 = st.columns(2)
+        # Create tabs for different views
+        tab1, tab2, tab3 = st.tabs(["💼 Allocation", "🎯 Strategy & Sectors", "🏆 Performance"])
         
-        with col1:
-            # All assets including cash
-            pie_data_all = self.analytics.prepare_pie_data(df)
-            fig1 = self.charts.create_pie_chart(
-                pie_data_all,
-                "Asset Allocation"
-            )
-            st.plotly_chart(fig1, use_container_width=True)
+        with tab1:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # All assets including cash
+                pie_data_all = self.analytics.prepare_pie_data(df)
+                fig1 = self.charts.create_pie_chart(
+                    pie_data_all,
+                    "Asset Allocation (All)"
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+            
+            with col2:
+                # Equities only
+                df_equity = df[df['Ticker'] != 'Cash']
+                pie_data_equity = self.analytics.prepare_pie_data(df_equity)
+                fig2 = self.charts.create_pie_chart(
+                    pie_data_equity,
+                    "Equity Distribution"
+                )
+                st.plotly_chart(fig2, use_container_width=True)
         
-        with col2:
-            # Equities only
-            df_equity = df[df['Ticker'] != 'Cash']
-            pie_data_equity = self.analytics.prepare_pie_data(df_equity)
-            fig2 = self.charts.create_pie_chart(
-                pie_data_equity,
-                "Equity Distribution"
-            )
-            st.plotly_chart(fig2, use_container_width=True)
+        with tab2:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Sector allocation
+                sector_fig = self.charts.create_sector_chart(df)
+                if sector_fig:
+                    st.plotly_chart(sector_fig, use_container_width=True)
+                else:
+                    st.info("📊 Sector data not available. Add a 'Sector' column to your spreadsheet.")
+            
+            with col2:
+                # Strategy allocation
+                strategy_fig = self.charts.create_strategy_chart(df)
+                if strategy_fig:
+                    st.plotly_chart(strategy_fig, use_container_width=True)
+                else:
+                    st.info("🎯 Strategy data not available. Add a 'Strategy_Role' column to your spreadsheet.")
+        
+        with tab3:
+            # Top performers chart
+            perf_fig = self.charts.create_performance_chart(df)
+            if perf_fig:
+                st.plotly_chart(perf_fig, use_container_width=True)
+            else:
+                st.info("No performance data available")
+            
+            # Additional performance metrics
+            st.markdown("### 📊 Performance Breakdown")
+            col1, col2, col3 = st.columns(3)
+            
+            equity_df = df[df['Ticker'] != 'Cash']
+            
+            with col1:
+                avg_return = equity_df['PnL_Pct'].mean() if not equity_df.empty else 0
+                st.metric("Avg Return", f"{avg_return:.2f}%")
+            
+            with col2:
+                median_return = equity_df['PnL_Pct'].median() if not equity_df.empty else 0
+                st.metric("Median Return", f"{median_return:.2f}%")
+            
+            with col3:
+                win_rate = (len(equity_df[equity_df['PnL_AUD'] > 0]) / len(equity_df) * 100) if not equity_df.empty else 0
+                st.metric("Win Rate", f"{win_rate:.1f}%")
     
     def render_holdings_table(self, df: pd.DataFrame):
         """Render detailed holdings table with view options"""
@@ -534,6 +794,107 @@ class Dashboard:
             use_container_width=True,
             height=500
         )
+    
+    def render_insights(self, df: pd.DataFrame, stats: dict):
+        """Render portfolio insights and risk metrics"""
+        st.markdown("---")
+        st.subheader("💡 Portfolio Insights")
+        
+        equity_df = df[df['Ticker'] != 'Cash'].copy()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 🎯 Concentration Analysis")
+            
+            # Top 3 holdings concentration
+            top_3_value = equity_df.nlargest(3, 'MV_AUD')['MV_AUD'].sum()
+            top_3_pct = (top_3_value / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
+            
+            # Top 5 holdings concentration
+            top_5_value = equity_df.nlargest(5, 'MV_AUD')['MV_AUD'].sum()
+            top_5_pct = (top_5_value / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
+            
+            # Top 10 holdings concentration
+            top_10_value = equity_df.nlargest(10, 'MV_AUD')['MV_AUD'].sum()
+            top_10_pct = (top_10_value / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
+            
+            concentration_data = pd.DataFrame({
+                'Category': ['Top 3 Holdings', 'Top 5 Holdings', 'Top 10 Holdings'],
+                'Percentage': [top_3_pct, top_5_pct, top_10_pct]
+            })
+            
+            fig = px.bar(
+                concentration_data,
+                x='Category',
+                y='Percentage',
+                text='Percentage',
+                color='Percentage',
+                color_continuous_scale=['#48C9B0', '#F5B041', '#EC7063']
+            )
+            
+            fig.update_traces(
+                texttemplate='%{text:.1f}%',
+                textposition='outside'
+            )
+            
+            fig.update_layout(
+                showlegend=False,
+                height=300,
+                margin=dict(t=20, b=20, l=0, r=0),
+                yaxis_title="Portfolio %",
+                xaxis_title="",
+                coloraxis_showscale=False
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Concentration warnings
+            if top_3_pct > 50:
+                st.warning("⚠️ Top 3 positions represent >50% of portfolio - high concentration risk")
+            elif top_3_pct > 40:
+                st.info("ℹ️ Moderate concentration in top 3 positions")
+        
+        with col2:
+            st.markdown("#### 📊 Risk Metrics")
+            
+            # Calculate volatility proxy (based on position sizes)
+            position_sizes = equity_df['MV_AUD'] / stats['equity_value'] * 100 if stats['equity_value'] > 0 else 0
+            
+            # Diversification metrics
+            num_positions = len(equity_df)
+            avg_position_size = position_sizes.mean() if not equity_df.empty else 0
+            max_position_size = position_sizes.max() if not equity_df.empty else 0
+            
+            # Herfindahl-Hirschman Index (HHI) for concentration
+            hhi = (position_sizes ** 2).sum() if not equity_df.empty else 0
+            
+            metrics_df = pd.DataFrame({
+                'Metric': ['Number of Positions', 'Avg Position Size', 'Largest Position', 'HHI (Concentration)'],
+                'Value': [f"{num_positions}", f"{avg_position_size:.1f}%", f"{max_position_size:.1f}%", f"{hhi:.0f}"]
+            })
+            
+            st.dataframe(
+                metrics_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.caption("**HHI Guide:** <1500 = Diversified | 1500-2500 = Moderate | >2500 = Concentrated")
+            
+            # Risk assessment
+            if hhi > 2500:
+                st.error("🔴 High concentration - consider diversifying")
+            elif hhi > 1500:
+                st.warning("🟡 Moderate concentration")
+            else:
+                st.success("🟢 Well diversified portfolio")
+            
+            # Allocation warnings
+            if stats['cash_pct'] > 30:
+                st.info(f"💰 {stats['cash_pct']:.1f}% cash - consider deploying capital")
+            elif stats['cash_pct'] < 5:
+                st.warning(f"⚠️ Only {stats['cash_pct']:.1f}% cash - limited dry powder")
     
     def _prepare_summary_view(self, df: pd.DataFrame) -> pd.DataFrame:
         """Aggregate holdings by ticker"""
@@ -670,6 +1031,7 @@ def main():
         # Render UI
         dashboard.render_header(stats, fx_rate)
         dashboard.render_charts(df_enriched)
+        dashboard.render_insights(df_enriched, stats)
         dashboard.render_holdings_table(df_enriched)
         dashboard.render_actions()
         
