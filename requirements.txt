@@ -1,0 +1,25 @@
+# Portfolio Dashboard - Production Dependencies
+# Generated for Python 3.8+
+
+# Core Framework
+streamlit>=1.31.0,<2.0.0
+
+# Data Processing
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0,<2.0.0
+
+# Market Data
+yfinance>=0.2.36,<1.0.0
+
+# Visualization
+plotly>=5.18.0,<6.0.0
+
+# Optional: Performance & Monitoring
+# psutil>=5.9.0  # System monitoring
+# streamlit-autorefresh>=0.0.1  # Auto-refresh capability
+
+# Development Dependencies (uncomment for dev environment)
+# pytest>=7.4.0
+# black>=23.0.0
+# flake8>=6.0.0
+# mypy>=1.5.0
