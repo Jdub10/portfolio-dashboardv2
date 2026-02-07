@@ -376,6 +376,9 @@ class PortfolioAnalytics:
         cash_value = df[df['Ticker'] == 'Cash']['MV_AUD'].sum()
         equity_value = total_mv - cash_value
         
+        # Count unique tickers excluding Cash
+        unique_positions = len(df[df['Ticker'] != 'Cash']['Ticker'].unique())
+        
         # Winner/Loser analysis
         winners = df[(df['PnL_AUD'] > 0) & (df['Ticker'] != 'Cash')]
         losers = df[(df['PnL_AUD'] < 0) & (df['Ticker'] != 'Cash')]
@@ -388,19 +391,19 @@ class PortfolioAnalytics:
             'pnl_pct': pnl_pct,
             'stock_pnl': stock_pnl,  # This is performance-based P&L
             'stock_pnl_pct': stock_pnl_pct,
-            'num_positions': len(df[df['Ticker'] != 'Cash']),
+            'num_positions': unique_positions,  # Fixed: count unique tickers only
             'cash_value': cash_value,
             'cash_pct': (cash_value / total_mv * 100) if total_mv > 0 else 0,
             'equity_value': equity_value,
             'equity_pct': (equity_value / total_mv * 100) if total_mv > 0 else 0,
-            'num_winners': len(winners),
-            'num_losers': len(losers),
-            'winners_value': winners['PnL_AUD'].sum() if not winners.empty else 0,
-            'losers_value': losers['PnL_AUD'].sum() if not losers.empty else 0,
-            'best_performer': winners.nlargest(1, 'PnL_Pct').iloc[0]['Ticker'] if not winners.empty else 'N/A',
-            'best_performer_pct': winners.nlargest(1, 'PnL_Pct').iloc[0]['PnL_Pct'] if not winners.empty else 0,
-            'worst_performer': losers.nsmallest(1, 'PnL_Pct').iloc[0]['Ticker'] if not losers.empty else 'N/A',
-            'worst_performer_pct': losers.nsmallest(1, 'PnL_Pct').iloc[0]['PnL_Pct'] if not losers.empty else 0,
+            'num_winners': len(winners['Ticker'].unique()),  # Count unique winners
+            'num_losers': len(losers['Ticker'].unique()),  # Count unique losers
+            'winners_value': winners.groupby('Ticker')['PnL_AUD'].sum().sum() if not winners.empty else 0,
+            'losers_value': losers.groupby('Ticker')['PnL_AUD'].sum().sum() if not losers.empty else 0,
+            'best_performer': winners.groupby('Ticker')['PnL_Pct'].mean().idxmax() if not winners.empty else 'N/A',
+            'best_performer_pct': winners.groupby('Ticker')['PnL_Pct'].mean().max() if not winners.empty else 0,
+            'worst_performer': losers.groupby('Ticker')['PnL_Pct'].mean().idxmin() if not losers.empty else 'N/A',
+            'worst_performer_pct': losers.groupby('Ticker')['PnL_Pct'].mean().min() if not losers.empty else 0,
         }
     
     @staticmethod
@@ -716,11 +719,12 @@ class Dashboard:
             )
         
         with col4:
+            # Show cash amount instead of percentage in delta
             st.metric(
-                "Positions",
+                "Stock Positions",
                 f"{stats['num_positions']}",
-                f"{stats['cash_pct']:.1f}% cash",
-                help="Number of holdings"
+                f"${stats['cash_value']:,.0f} cash",
+                help="Unique stocks held (excluding cash)"
             )
         
         with col5:
@@ -853,7 +857,7 @@ class Dashboard:
         st.subheader("📋 Holdings Detail")
         
         # View mode selector
-        col1, col2, col3 = st.columns([2, 1, 1])
+        col1, col2 = st.columns([3, 1])
         with col1:
             view_mode = st.radio(
                 "View",
@@ -868,15 +872,37 @@ class Dashboard:
         else:
             df_display = self._prepare_detailed_view(df)
         
-        # Render table
+        # Configure column order for better mobile display
+        # Put most important columns first
+        if view_mode == "Summary":
+            column_order = ['Ticker', 'MV_AUD', 'PnL_AUD', 'PnL_%', 'Shares', 'Current_Price', 'Avg_Cost', 'Cost_AUD']
+        else:
+            column_order = ['Ticker', 'Platform', 'MV_AUD', 'PnL_AUD', 'PnL_%', 'Shares', 'Current_Price', 'Avg_Cost', 'Cost_AUD']
+        
+        # Reorder columns
+        available_cols = [col for col in column_order if col in df_display.columns]
+        df_display = df_display[available_cols]
+        
+        # Render table with column configuration
         st.dataframe(
             df_display.style
             .format(self._get_format_dict(view_mode), na_rep="—")
             .apply(self._highlight_totals, axis=1)
-            .apply(self._color_pnl, subset=['PnL_AUD'], axis=0)
-            .apply(self._color_pnl, subset=['PnL_%'], axis=0),
+            .apply(self._color_pnl, subset=['PnL_AUD'] if 'PnL_AUD' in df_display.columns else [], axis=0)
+            .apply(self._color_pnl, subset=['PnL_%'] if 'PnL_%' in df_display.columns else [], axis=0),
             use_container_width=True,
-            height=500
+            height=500,
+            column_config={
+                "Ticker": st.column_config.TextColumn("Stock", width="small"),
+                "Platform": st.column_config.TextColumn("Platform", width="small"),
+                "MV_AUD": st.column_config.NumberColumn("Market Value", width="medium"),
+                "Cost_AUD": st.column_config.NumberColumn("Cost", width="medium"),
+                "PnL_AUD": st.column_config.NumberColumn("P&L $", width="medium"),
+                "PnL_%": st.column_config.NumberColumn("P&L %", width="small"),
+                "Shares": st.column_config.NumberColumn("Shares", width="small"),
+                "Current_Price": st.column_config.NumberColumn("Price", width="small"),
+                "Avg_Cost": st.column_config.NumberColumn("Avg Cost", width="small"),
+            }
         )
     
     def render_insights(self, df: pd.DataFrame, stats: dict):
@@ -886,99 +912,154 @@ class Dashboard:
         
         equity_df = df[df['Ticker'] != 'Cash'].copy()
         
+        # Aggregate by ticker for unique positions
+        equity_agg = equity_df.groupby('Ticker').agg({
+            'MV_AUD': 'sum',
+            'PnL_AUD': 'sum'
+        }).reset_index()
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("#### 🎯 Concentration Analysis")
+            st.markdown("#### 🎯 Top Holdings")
             
-            # Top 3 holdings concentration
-            top_3_value = equity_df.nlargest(3, 'MV_AUD')['MV_AUD'].sum()
-            top_3_pct = (top_3_value / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
+            # Show top 10 holdings with clear percentages
+            top_holdings = equity_agg.nlargest(10, 'MV_AUD').copy()
+            top_holdings['% of Stocks'] = (top_holdings['MV_AUD'] / stats['equity_value'] * 100)
+            top_holdings['% of Total'] = (top_holdings['MV_AUD'] / stats['total_mv'] * 100)
             
-            # Top 5 holdings concentration
-            top_5_value = equity_df.nlargest(5, 'MV_AUD')['MV_AUD'].sum()
-            top_5_pct = (top_5_value / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
-            
-            # Top 10 holdings concentration
-            top_10_value = equity_df.nlargest(10, 'MV_AUD')['MV_AUD'].sum()
-            top_10_pct = (top_10_value / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
-            
-            concentration_data = pd.DataFrame({
-                'Category': ['Top 3 Holdings', 'Top 5 Holdings', 'Top 10 Holdings'],
-                'Percentage': [top_3_pct, top_5_pct, top_10_pct]
-            })
-            
-            fig = px.bar(
-                concentration_data,
-                x='Category',
-                y='Percentage',
-                text='Percentage',
-                color='Percentage',
-                color_continuous_scale=['#48C9B0', '#F5B041', '#EC7063']
-            )
-            
-            fig.update_traces(
-                texttemplate='%{text:.1f}%',
-                textposition='outside'
-            )
-            
-            fig.update_layout(
-                showlegend=False,
-                height=300,
-                margin=dict(t=20, b=20, l=0, r=0),
-                yaxis_title="Portfolio %",
-                xaxis_title="",
-                coloraxis_showscale=False
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Concentration warnings
-            if top_3_pct > 50:
-                st.warning("⚠️ Top 3 positions represent >50% of portfolio - high concentration risk")
-            elif top_3_pct > 40:
-                st.info("ℹ️ Moderate concentration in top 3 positions")
-        
-        with col2:
-            st.markdown("#### 📊 Risk Metrics")
-            
-            # Calculate volatility proxy (based on position sizes)
-            position_sizes = equity_df['MV_AUD'] / stats['equity_value'] * 100 if stats['equity_value'] > 0 else 0
-            
-            # Diversification metrics
-            num_positions = len(equity_df)
-            avg_position_size = position_sizes.mean() if not equity_df.empty else 0
-            max_position_size = position_sizes.max() if not equity_df.empty else 0
-            
-            # Herfindahl-Hirschman Index (HHI) for concentration
-            hhi = (position_sizes ** 2).sum() if not equity_df.empty else 0
-            
-            metrics_df = pd.DataFrame({
-                'Metric': ['Number of Positions', 'Avg Position Size', 'Largest Position', 'HHI (Concentration)'],
-                'Value': [f"{num_positions}", f"{avg_position_size:.1f}%", f"{max_position_size:.1f}%", f"{hhi:.0f}"]
-            })
+            # Display as table
+            display_df = top_holdings[['Ticker', '% of Stocks', '% of Total']].copy()
+            display_df['% of Stocks'] = display_df['% of Stocks'].apply(lambda x: f"{x:.1f}%")
+            display_df['% of Total'] = display_df['% of Total'].apply(lambda x: f"{x:.1f}%")
             
             st.dataframe(
-                metrics_df,
+                display_df,
                 use_container_width=True,
-                hide_index=True
+                hide_index=True,
+                height=400
+            )
+        
+        with col2:
+            st.markdown("#### 📊 Concentration Metrics")
+            
+            # Calculate concentrations
+            top_3 = equity_agg.nlargest(3, 'MV_AUD')['MV_AUD'].sum()
+            top_5 = equity_agg.nlargest(5, 'MV_AUD')['MV_AUD'].sum()
+            top_10 = equity_agg.nlargest(10, 'MV_AUD')['MV_AUD'].sum()
+            
+            top_3_pct = (top_3 / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
+            top_5_pct = (top_5 / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
+            top_10_pct = (top_10 / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
+            
+            # Display in clear metrics format
+            st.metric(
+                "Top 3 Holdings",
+                f"{top_3_pct:.1f}%",
+                f"${top_3:,.0f}",
+                help="Percentage of stock portfolio (excluding cash)"
             )
             
-            st.caption("**HHI Guide:** <1500 = Diversified | 1500-2500 = Moderate | >2500 = Concentrated")
+            st.metric(
+                "Top 5 Holdings",
+                f"{top_5_pct:.1f}%",
+                f"${top_5:,.0f}",
+                help="Percentage of stock portfolio (excluding cash)"
+            )
+            
+            st.metric(
+                "Top 10 Holdings",
+                f"{top_10_pct:.1f}%",
+                f"${top_10:,.0f}",
+                help="Percentage of stock portfolio (excluding cash)"
+            )
             
             # Risk assessment
-            if hhi > 2500:
-                st.error("🔴 High concentration - consider diversifying")
-            elif hhi > 1500:
-                st.warning("🟡 Moderate concentration")
+            st.markdown("---")
+            if top_3_pct > 60:
+                st.error("🔴 **High Risk:** Top 3 = >60% of stocks")
+                st.caption("Consider rebalancing to reduce concentration")
+            elif top_3_pct > 50:
+                st.warning("🟡 **Moderate Risk:** Top 3 = >50% of stocks")
+                st.caption("Watch concentration levels")
             else:
-                st.success("🟢 Well diversified portfolio")
-            
-            # Allocation warnings
+                st.success("🟢 **Well Diversified:** Top 3 = <50%")
+                st.caption("Good diversification")
+        
+        # Cash allocation section
+        st.markdown("---")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                "💵 Cash Balance",
+                f"${stats['cash_value']:,.0f}",
+                f"{stats['cash_pct']:.1f}% of total",
+                help="Total cash across all platforms"
+            )
+        
+        with col2:
+            st.metric(
+                "📈 Stock Value",
+                f"${stats['equity_value']:,.0f}",
+                f"{stats['equity_pct']:.1f}% of total",
+                help="Total value of all stock positions"
+            )
+        
+        with col3:
+            # Cash status
             if stats['cash_pct'] > 30:
-                st.info(f"💰 {stats['cash_pct']:.1f}% cash - consider deploying capital")
+                st.warning("⚠️ High Cash")
+                st.caption(f"{stats['cash_pct']:.1f}% uninvested - consider deploying")
             elif stats['cash_pct'] < 5:
-                st.warning(f"⚠️ Only {stats['cash_pct']:.1f}% cash - limited dry powder")
+                st.warning("⚠️ Low Cash")
+                st.caption(f"Only {stats['cash_pct']:.1f}% - limited buying power")
+            else:
+                st.success("✅ Balanced")
+                st.caption(f"{stats['cash_pct']:.1f}% cash - good balance")
+        
+        # Diversification score
+        st.markdown("---")
+        st.markdown("#### 🎲 Diversification Score")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Calculate Herfindahl-Hirschman Index
+            position_pcts = (equity_agg['MV_AUD'] / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
+            hhi = (position_pcts ** 2).sum() if stats['equity_value'] > 0 else 0
+            
+            # Invert HHI to create a diversification score (0-100)
+            # Perfect diversification (equal weights) would give low HHI
+            # We want high score = good diversification
+            max_hhi = 10000  # Theoretical max (100% in one position)
+            diversification_score = ((max_hhi - hhi) / max_hhi * 100)
+            
+            # Show progress bar
+            if diversification_score >= 70:
+                st.success(f"**Score: {diversification_score:.0f}/100** - Excellent diversification! 🎯")
+            elif diversification_score >= 50:
+                st.info(f"**Score: {diversification_score:.0f}/100** - Good diversification 👍")
+            elif diversification_score >= 30:
+                st.warning(f"**Score: {diversification_score:.0f}/100** - Moderate diversification ⚠️")
+            else:
+                st.error(f"**Score: {diversification_score:.0f}/100** - Needs diversification 🔴")
+            
+            st.progress(diversification_score / 100)
+        
+        with col2:
+            st.metric(
+                "HHI Index",
+                f"{hhi:.0f}",
+                help="Lower = more diversified"
+            )
+            
+            if hhi < 1500:
+                st.caption("🟢 Low concentration")
+            elif hhi < 2500:
+                st.caption("🟡 Moderate concentration")
+            else:
+                st.caption("🔴 High concentration")
     
     def _prepare_summary_view(self, df: pd.DataFrame) -> pd.DataFrame:
         """Aggregate holdings by ticker"""
