@@ -54,28 +54,51 @@ def setup_page():
         initial_sidebar_state="collapsed"
     )
     
+    # Add viewport meta tag for mobile optimization
+    st.markdown("""
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+    """, unsafe_allow_html=True)
+    
     st.markdown("""
     <style>
         /* Modern clean aesthetic */
         .main { 
-            background-color: #ffffff;
+            background-color: #ffffff !important;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
         
         h1, h2, h3 { 
-            font-weight: 600;
+            font-weight: 600 !important;
             letter-spacing: -0.5px;
-            color: #1a1a1a;
+            color: #1a1a1a !important;
         }
         
-        /* Metric cards with subtle shadows */
+        /* Fix metric cards - ensure visibility */
         [data-testid="stMetric"] {
-            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
-            border: 1px solid #e9ecef;
+            background: #f8f9fa !important;
+            border: 1px solid #e9ecef !important;
             border-radius: 12px;
             padding: 1.25rem !important;
             box-shadow: 0 2px 8px rgba(0,0,0,0.04);
             transition: all 0.3s ease;
+        }
+        
+        /* Fix metric values - ensure text is visible */
+        [data-testid="stMetric"] label {
+            color: #495057 !important;
+            font-size: 0.875rem !important;
+            font-weight: 600 !important;
+        }
+        
+        [data-testid="stMetric"] [data-testid="stMetricValue"] {
+            color: #1a1a1a !important;
+            font-size: 1.5rem !important;
+            font-weight: 700 !important;
+        }
+        
+        [data-testid="stMetric"] [data-testid="stMetricDelta"] {
+            font-size: 0.875rem !important;
+            font-weight: 600 !important;
         }
         
         [data-testid="stMetric"]:hover {
@@ -89,7 +112,7 @@ def setup_page():
             font-weight: 500;
             border: 1px solid #dee2e6;
             background-color: #ffffff;
-            color: #495057;
+            color: #495057 !important;
             transition: all 0.2s ease;
             padding: 0.5rem 1.5rem;
         }
@@ -97,7 +120,7 @@ def setup_page():
         .stButton>button:hover {
             border-color: #2E4053;
             background-color: #2E4053;
-            color: white;
+            color: white !important;
             box-shadow: 0 4px 12px rgba(46, 64, 83, 0.2);
         }
         
@@ -108,10 +131,45 @@ def setup_page():
             border-radius: 8px;
         }
         
-        /* Data tables */
+        /* Fix tab labels */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 8px;
+        }
+        
+        .stTabs [data-baseweb="tab"] {
+            color: #495057 !important;
+            font-weight: 600;
+        }
+        
+        .stTabs [aria-selected="true"] {
+            color: #2E4053 !important;
+        }
+        
+        /* Data tables - fix visibility */
         .dataframe {
             border-radius: 8px;
             overflow: hidden;
+            color: #1a1a1a !important;
+        }
+        
+        .dataframe thead tr th {
+            background-color: #f8f9fa !important;
+            color: #1a1a1a !important;
+            font-weight: 600 !important;
+        }
+        
+        .dataframe tbody tr td {
+            color: #1a1a1a !important;
+        }
+        
+        /* Fix text visibility on mobile */
+        p, span, div {
+            color: #1a1a1a !important;
+        }
+        
+        /* Ensure captions are visible */
+        .caption {
+            color: #6c757d !important;
         }
         
         /* Hide Streamlit branding */
@@ -127,6 +185,29 @@ def setup_page():
         }
         .status-live { background-color: #28a745; }
         .status-cached { background-color: #ffc107; }
+        
+        /* Mobile-specific fixes */
+        @media (max-width: 768px) {
+            [data-testid="stMetric"] {
+                padding: 1rem !important;
+            }
+            
+            [data-testid="stMetric"] [data-testid="stMetricValue"] {
+                font-size: 1.25rem !important;
+            }
+            
+            h1 {
+                font-size: 1.75rem !important;
+            }
+            
+            h2 {
+                font-size: 1.5rem !important;
+            }
+            
+            h3 {
+                font-size: 1.25rem !important;
+            }
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -628,7 +709,8 @@ class Dashboard:
                 "Total P&L",
                 f"${stats['total_pnl']:,.0f}",
                 f"{stats['pnl_pct']:.2f}%",
-                delta_color=delta_color
+                delta_color=delta_color,
+                help="Total profit or loss"
             )
         
         with col3:
@@ -642,7 +724,8 @@ class Dashboard:
             st.metric(
                 "Positions",
                 f"{stats['num_positions']}",
-                f"{stats['cash_pct']:.1f}% cash"
+                f"{stats['cash_pct']:.1f}% cash",
+                help="Number of holdings"
             )
         
         with col5:
@@ -653,7 +736,7 @@ class Dashboard:
             )
         
         # Secondary metrics row
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("---")
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -661,7 +744,8 @@ class Dashboard:
                 "Winners",
                 f"{stats['num_winners']}",
                 f"+${stats['winners_value']:,.0f}",
-                delta_color="normal"
+                delta_color="normal",
+                help="Profitable positions"
             )
         
         with col2:
@@ -669,7 +753,8 @@ class Dashboard:
                 "Losers", 
                 f"{stats['num_losers']}",
                 f"${stats['losers_value']:,.0f}",
-                delta_color="inverse"
+                delta_color="inverse",
+                help="Loss-making positions"
             )
         
         with col3:
@@ -677,7 +762,8 @@ class Dashboard:
                 "Best Performer",
                 stats['best_performer'],
                 f"+{stats['best_performer_pct']:.1f}%",
-                delta_color="normal"
+                delta_color="normal",
+                help="Top gainer"
             )
         
         with col4:
@@ -685,7 +771,8 @@ class Dashboard:
                 "Worst Performer",
                 stats['worst_performer'],
                 f"{stats['worst_performer_pct']:.1f}%",
-                delta_color="inverse"
+                delta_color="inverse",
+                help="Biggest loser"
             )
     
     def render_charts(self, df: pd.DataFrame):
