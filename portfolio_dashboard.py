@@ -870,13 +870,13 @@ class Dashboard:
             column_config={
                 "Ticker":        st.column_config.TextColumn("Stock",    width="small"),
                 "Platform":      st.column_config.TextColumn("Platform", width="small"),
-                "MV_AUD":        st.column_config.NumberColumn("Mkt Val $", format="$%,.0f", width="medium"),
-                "PnL_%":         st.column_config.NumberColumn("P&L %",    format="%+.2f%%", width="small"),
-                "PnL_AUD":       st.column_config.NumberColumn("P&L $",    format="$%,.0f",  width="medium"),
-                "Cost_AUD":      st.column_config.NumberColumn("Cost $",   format="$%,.0f",  width="medium"),
-                "Shares":        st.column_config.NumberColumn("Shares",   format="%.2f",    width="small"),
-                "Current_Price": st.column_config.NumberColumn("Price",    format="%.2f",    width="small"),
-                "Avg_Cost":      st.column_config.NumberColumn("Avg Cost", format="%.2f",    width="small"),
+                "MV_AUD":        st.column_config.TextColumn("Mkt Val",  width="medium"),
+                "PnL_%":         st.column_config.TextColumn("P&L %",   width="small"),
+                "PnL_AUD":       st.column_config.TextColumn("P&L $",   width="medium"),
+                "Cost_AUD":      st.column_config.TextColumn("Cost $",   width="medium"),
+                "Shares":        st.column_config.TextColumn("Shares",   width="small"),
+                "Current_Price": st.column_config.TextColumn("Price",    width="small"),
+                "Avg_Cost":      st.column_config.TextColumn("Avg Cost", width="small"),
             }
         )
     
@@ -1032,36 +1032,35 @@ class Dashboard:
         """Add summary totals row"""
         df_sorted = df.sort_values('MV_AUD', ascending=False).reset_index(drop=True)
         df_sorted.index += 1
-        
-        total_row = pd.DataFrame({
-            'Ticker': ['TOTAL'],
-            'Cost_AUD': [df_sorted['Cost_AUD'].sum()],
-            'MV_AUD': [df_sorted['MV_AUD'].sum()],
-            'PnL_AUD': [df_sorted['PnL_AUD'].sum()],
-        }, index=[''])
-        
+
+        # Build total row with NaN for non-summable columns (shows "—")
+        total_data = {col: [float('nan')] for col in df_sorted.columns}
+        total_data['Ticker']  = ['TOTAL']
+        total_data['Cost_AUD'] = [df_sorted['Cost_AUD'].sum()]
+        total_data['MV_AUD']   = [df_sorted['MV_AUD'].sum()]
+        total_data['PnL_AUD']  = [df_sorted['PnL_AUD'].sum()]
+
+        total_row = pd.DataFrame(total_data, index=[''])
+
         total_cost = total_row['Cost_AUD'].iloc[0]
         if total_cost != 0:
             total_row['PnL_%'] = (total_row['PnL_AUD'] / total_cost * 100)
-        
+
         return pd.concat([df_sorted, total_row])
     
     @staticmethod
     def _get_format_dict(view_mode: str) -> dict:
         """Get formatting dictionary for dataframe"""
-        base_format = {
-            'Avg_Cost': "{:.2f}",
-            'Current_Price': "{:.2f}",
-            'Cost_AUD': "${:,.0f}",
-            'MV_AUD': "${:,.0f}",
-            'PnL_AUD': "${:,.0f}",
-            'PnL_%': "{:+.2f}%"
+        return {
+            'Shares':        "{:,.2f}",
+            'Avg_Cost':      "{:,.2f}",
+            'Current_Price': "{:,.2f}",
+            'Cost_AUD':      "${:,.0f}",
+            'MV_AUD':        "${:,.0f}",
+            'PnL_AUD':       "${:,.0f}",
+            'PnL_%':         "{:+.2f}%",
+            'Stop_Loss_Price': "{:,.2f}",
         }
-        
-        if view_mode == "Detailed":
-            base_format['Stop_Loss_Price'] = "{:.2f}"
-        
-        return base_format
     
     @staticmethod
     def _highlight_totals(row):
