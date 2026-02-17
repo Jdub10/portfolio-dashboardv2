@@ -694,50 +694,69 @@ class Dashboard:
     def render_header(self, stats: dict, fx_rate: float):
         """Render dashboard header with responsive metric cards"""
 
-        def _card(label, value, delta="", delta_dir="neu"):
-            dir_class = {"up": "delta-up", "down": "delta-down", "neu": "delta-neu"}.get(delta_dir, "delta-neu")
-            arrow = "▲ " if delta_dir == "up" else ("▼ " if delta_dir == "down" else "")
-            delta_html = f'<div class="delta {dir_class}">{arrow}{delta}</div>' if delta else ""
-            return f"""
-            <div class="metric-card">
-                <div class="label">{label}</div>
-                <div class="value">{value}</div>
-                {delta_html}
-            </div>"""
+        CARD = (
+            "background:#f8f9fa;border:1px solid #e0e0e0;border-radius:12px;"
+            "padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);"
+        )
+        LABEL = (
+            "font-size:0.72rem;font-weight:600;color:#666;"
+            "text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;"
+        )
+        VALUE = "font-size:1.15rem;font-weight:700;color:#1a1a1a;line-height:1.2;"
+        D_UP  = "font-size:0.78rem;font-weight:600;color:#1a9655;margin-top:3px;"
+        D_DN  = "font-size:0.78rem;font-weight:600;color:#dc3545;margin-top:3px;"
+        D_NEU = "font-size:0.78rem;font-weight:600;color:#555;margin-top:3px;"
 
-        pnl_dir   = "up"   if stats['total_pnl']  >= 0 else "down"
-        spnl_dir  = "up"   if stats['stock_pnl']  >= 0 else "down"
-        best_dir  = "up"
-        worst_dir = "down"
+        GRID = (
+            "display:grid;grid-template-columns:1fr 1fr;"
+            "gap:10px;margin-bottom:10px;"
+        )
+
+        def _card(label, value, delta="", delta_dir="neu"):
+            d_style = {"up": D_UP, "down": D_DN, "neu": D_NEU}.get(delta_dir, D_NEU)
+            arrow   = "▲ " if delta_dir == "up" else ("▼ " if delta_dir == "down" else "")
+            d_html  = f'<div style="{d_style}">{arrow}{delta}</div>' if delta else ""
+            return (
+                f'<div style="{CARD}">'
+                f'<div style="{LABEL}">{label}</div>'
+                f'<div style="{VALUE}">{value}</div>'
+                f'{d_html}'
+                f'</div>'
+            )
+
+        pnl_dir  = "up"   if stats['total_pnl'] >= 0 else "down"
+        spnl_dir = "up"   if stats['stock_pnl'] >= 0 else "down"
 
         st.title("📊 Portfolio Command Center")
         st.caption(f"Updated: {datetime.now().strftime('%d %b %Y  %H:%M')}")
 
-        # ── Row 1: 2×2 grid ──────────────────────────────────────────────────
-        st.markdown(f"""
-        <div class="metric-grid">
-            {_card("Total Value",      f"${stats['total_mv']:,.0f}")}
-            {_card("Total P&L",        f"${stats['total_pnl']:,.0f}",
-                   f"{stats['pnl_pct']:.2f}%", pnl_dir)}
-            {_card("Capital Injected", f"${stats['capital_injected']:,.0f}")}
-            {_card("Stock Positions",  str(stats['num_positions']),
-                   f"${stats['cash_value']:,.0f} cash", "neu")}
-        </div>
-        """, unsafe_allow_html=True)
+        # ── Row 1 ──────────────────────────────────────────────────────────
+        st.markdown(
+            f'<div style="{GRID}">'
+            + _card("Total Value",      f"${stats['total_mv']:,.0f}")
+            + _card("Total P&L",        f"${stats['total_pnl']:,.0f}",
+                    f"{stats['pnl_pct']:.2f}%", pnl_dir)
+            + _card("Capital Injected", f"${stats['capital_injected']:,.0f}")
+            + _card("Stock Positions",  str(stats['num_positions']),
+                    f"${stats['cash_value']:,.0f} cash", "neu")
+            + '</div>',
+            unsafe_allow_html=True
+        )
 
-        # ── Row 2: 2×2 grid ──────────────────────────────────────────────────
-        st.markdown(f"""
-        <div class="metric-grid">
-            {_card("Stock Performance", f"${stats['stock_pnl']:,.0f}",
-                   f"{stats['stock_pnl_pct']:.2f}%", spnl_dir)}
-            {_card("AUD / USD", f"{fx_rate:.4f}")}
-            {_card("Best Performer",  stats['best_performer'],
-                   f"+{stats['best_performer_pct']:.1f}%", best_dir)}
-            {_card("Worst Performer", stats['worst_performer'],
-                   f"{stats['worst_performer_pct']:.1f}%", worst_dir)}
-        </div>
-        <hr class="section-divider">
-        """, unsafe_allow_html=True)
+        # ── Row 2 ──────────────────────────────────────────────────────────
+        st.markdown(
+            f'<div style="{GRID}">'
+            + _card("Stock Performance", f"${stats['stock_pnl']:,.0f}",
+                    f"{stats['stock_pnl_pct']:.2f}%", spnl_dir)
+            + _card("AUD / USD",         f"{fx_rate:.4f}")
+            + _card("Best Performer",    stats['best_performer'],
+                    f"+{stats['best_performer_pct']:.1f}%", "up")
+            + _card("Worst Performer",   stats['worst_performer'],
+                    f"{stats['worst_performer_pct']:.1f}%", "down")
+            + '</div>'
+            + '<hr style="border:none;border-top:1px solid #e9ecef;margin:16px 0;">',
+            unsafe_allow_html=True
+        )
     
     def render_charts(self, df: pd.DataFrame):
         """Render portfolio visualization charts"""
@@ -902,20 +921,26 @@ class Dashboard:
         top_5_pct  = equity_agg.nlargest(5,  'MV_AUD')['MV_AUD'].sum() / ev * 100
         top_10_pct = equity_agg.nlargest(10, 'MV_AUD')['MV_AUD'].sum() / ev * 100
 
-        st.markdown(f"""
-        <div class="metric-grid">
-            <div class="metric-card">
-                <div class="label">Top 3 Holdings</div>
-                <div class="value">{top_3_pct:.1f}%</div>
-                <div class="delta delta-neu">of stock portfolio</div>
-            </div>
-            <div class="metric-card">
-                <div class="label">Top 5 Holdings</div>
-                <div class="value">{top_5_pct:.1f}%</div>
-                <div class="delta delta-neu">of stock portfolio</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        CARD  = "background:#f8f9fa;border:1px solid #e0e0e0;border-radius:12px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);"
+        LABEL = "font-size:0.72rem;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;"
+        VALUE = "font-size:1.15rem;font-weight:700;color:#1a1a1a;line-height:1.2;"
+        DELTA = "font-size:0.78rem;font-weight:600;color:#555;margin-top:3px;"
+        GRID  = "display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;"
+
+        st.markdown(
+            f'<div style="{GRID}">'
+            f'<div style="{CARD}"><div style="{LABEL}">Top 3 Holdings</div>'
+            f'<div style="{VALUE}">{top_3_pct:.1f}%</div>'
+            f'<div style="{DELTA}">of stock portfolio</div></div>'
+            f'<div style="{CARD}"><div style="{LABEL}">Top 5 Holdings</div>'
+            f'<div style="{VALUE}">{top_5_pct:.1f}%</div>'
+            f'<div style="{DELTA}">of stock portfolio</div></div>'
+            f'<div style="{CARD}"><div style="{LABEL}">Top 10 Holdings</div>'
+            f'<div style="{VALUE}">{top_10_pct:.1f}%</div>'
+            f'<div style="{DELTA}">of stock portfolio</div></div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
         # Risk badge
         if top_3_pct > 60:
@@ -932,20 +957,17 @@ class Dashboard:
         cash_pct   = stats['cash_pct']
         equity_pct = stats['equity_pct']
 
-        st.markdown(f"""
-        <div class="metric-grid">
-            <div class="metric-card">
-                <div class="label">Cash Balance</div>
-                <div class="value">${stats['cash_value']:,.0f}</div>
-                <div class="delta delta-neu">{cash_pct:.1f}% of portfolio</div>
-            </div>
-            <div class="metric-card">
-                <div class="label">Stock Value</div>
-                <div class="value">${stats['equity_value']:,.0f}</div>
-                <div class="delta delta-neu">{equity_pct:.1f}% of portfolio</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="{GRID}">'
+            f'<div style="{CARD}"><div style="{LABEL}">Cash Balance</div>'
+            f'<div style="{VALUE}">${stats["cash_value"]:,.0f}</div>'
+            f'<div style="{DELTA}">{cash_pct:.1f}% of portfolio</div></div>'
+            f'<div style="{CARD}"><div style="{LABEL}">Stock Value</div>'
+            f'<div style="{VALUE}">${stats["equity_value"]:,.0f}</div>'
+            f'<div style="{DELTA}">{equity_pct:.1f}% of portfolio</div></div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
         if cash_pct > 30:
             st.warning(f"⚠️ **{cash_pct:.1f}% in cash** — large uninvested balance. Consider deploying into positions.")
