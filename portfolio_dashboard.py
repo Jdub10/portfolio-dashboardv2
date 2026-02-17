@@ -496,7 +496,7 @@ class ChartBuilder:
             textinfo='label+percent',
             textposition='inside',
             textfont_size=11,
-            marker=dict(line=dict(color='white', width=2))
+            marker=dict(line=dict(color='rgba(0,0,0,0)', width=0))
         )
         
         return fig
@@ -577,7 +577,7 @@ class ChartBuilder:
             textinfo='label+percent',
             textposition='inside',
             textfont_size=11,
-            marker=dict(line=dict(color='white', width=2))
+            marker=dict(line=dict(color='rgba(0,0,0,0)', width=0))
         )
         
         return fig
@@ -629,7 +629,7 @@ class ChartBuilder:
             textinfo='label+percent',
             textposition='inside',
             textfont_size=11,
-            marker=dict(line=dict(color='white', width=2))
+            marker=dict(line=dict(color='rgba(0,0,0,0)', width=0))
         )
         
         return fig
@@ -834,15 +834,13 @@ class Dashboard:
                 st.metric("Win Rate", f"{win_rate:.1f}%")
     
     def render_holdings_table(self, df: pd.DataFrame):
-        """Render holdings table - mobile optimised"""
+        """Render holdings - simple card list on mobile, full table on desktop"""
         st.markdown("---")
         st.subheader("📋 Holdings")
 
         view_mode = st.radio(
-            "View",
-            ["Summary", "Detailed"],
-            horizontal=True,
-            label_visibility="collapsed"
+            "View", ["Summary", "Detailed"],
+            horizontal=True, label_visibility="collapsed"
         )
 
         df_display = (
@@ -850,15 +848,16 @@ class Dashboard:
             else self._prepare_detailed_view(df)
         )
 
-        # ── Column order: most useful → least on mobile ───────────────────
+        # ── Column order ───────────────────────────────────────────────────
         if view_mode == "Summary":
-            col_order = ['Ticker', 'MV_AUD', 'PnL_%', 'PnL_AUD', 'Cost_AUD', 'Shares', 'Current_Price', 'Avg_Cost']
+            col_order = ['Ticker','MV_AUD','PnL_%','PnL_AUD','Cost_AUD','Shares','Current_Price','Avg_Cost']
         else:
-            col_order = ['Ticker', 'Platform', 'MV_AUD', 'PnL_%', 'PnL_AUD', 'Cost_AUD', 'Shares', 'Current_Price', 'Avg_Cost']
+            col_order = ['Ticker','Platform','MV_AUD','PnL_%','PnL_AUD','Cost_AUD','Shares','Current_Price','Avg_Cost']
 
-        available = [c for c in col_order if c in df_display.columns]
+        available  = [c for c in col_order if c in df_display.columns]
         df_display = df_display[available]
 
+        # ── Desktop: styled dataframe ──────────────────────────────────────
         st.dataframe(
             df_display.style
                 .format(self._get_format_dict(view_mode), na_rep="—")
@@ -879,6 +878,75 @@ class Dashboard:
                 "Avg_Cost":      st.column_config.TextColumn("Avg Cost", width="small"),
             }
         )
+
+        # ── Mobile: clean HTML summary with totals always visible ──────────
+        st.markdown("##### 📱 Mobile Summary")
+        st.caption("Scroll table above for full detail · Key figures below")
+
+        # Aggregate to unique tickers for the mobile summary
+        equity_df = df[df['Ticker'] != 'Cash'].copy()
+        mob = equity_df.groupby('Ticker').agg(
+            MV_AUD  =('MV_AUD',  'sum'),
+            Cost_AUD=('Cost_AUD','sum'),
+            PnL_AUD =('PnL_AUD', 'sum'),
+        ).reset_index()
+        mob['PnL_%'] = (mob['PnL_AUD'] / mob['Cost_AUD'] * 100).fillna(0)
+        mob = mob.sort_values('MV_AUD', ascending=False)
+
+        total_mv   = mob['MV_AUD'].sum()
+        total_cost = mob['Cost_AUD'].sum()
+        total_pnl  = mob['PnL_AUD'].sum()
+        total_pct  = (total_pnl / total_cost * 100) if total_cost else 0
+
+        # Build HTML table — fully inline styled, works on Safari iOS
+        ROW_BASE   = "display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-bottom:1px solid #f0f0f0;"
+        ROW_TOTAL  = ROW_BASE + "background:#f8f9fa;font-weight:700;border-radius:0 0 10px 10px;"
+        WRAP       = "background:#fff;border:1px solid #e0e0e0;border-radius:10px;margin-bottom:12px;overflow:hidden;"
+        HDR        = "display:flex;justify-content:space-between;padding:7px 12px;background:#2E4053;border-radius:10px 10px 0 0;"
+        HDR_T      = "color:#fff !important;font-size:0.7rem;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;"
+        TICKER_S   = "font-weight:700;font-size:0.95rem;color:#1a1a1a;"
+        MV_S       = "font-size:0.9rem;font-weight:600;color:#1a1a1a;text-align:right;"
+        PNL_UP     = "font-size:0.82rem;font-weight:600;color:#1a9655;text-align:right;"
+        PNL_DN     = "font-size:0.82rem;font-weight:600;color:#dc3545;text-align:right;"
+        COST_S     = "font-size:0.78rem;color:#666;text-align:right;"
+
+        rows_html = ""
+        for _, r in mob.iterrows():
+            pnl_style = PNL_UP if r['PnL_AUD'] >= 0 else PNL_DN
+            arrow     = "▲" if r['PnL_AUD'] >= 0 else "▼"
+            rows_html += (
+                f'<div style="{ROW_BASE}">'
+                f'  <div style="{TICKER_S}">{r["Ticker"]}</div>'
+                f'  <div style="text-align:right">'
+                f'    <div style="{MV_S}">${r["MV_AUD"]:,.0f}</div>'
+                f'    <div style="{pnl_style}">{arrow} {r["PnL_%"]:+.1f}% · ${r["PnL_AUD"]:,.0f}</div>'
+                f'    <div style="{COST_S}">Cost ${r["Cost_AUD"]:,.0f}</div>'
+                f'  </div>'
+                f'</div>'
+            )
+
+        total_pnl_style = PNL_UP if total_pnl >= 0 else PNL_DN
+        total_arrow     = "▲" if total_pnl >= 0 else "▼"
+
+        html = (
+            f'<div style="{WRAP}">'
+            f'  <div style="{HDR}">'
+            f'    <span style="{HDR_T}">Stock</span>'
+            f'    <span style="{HDR_T}">Mkt Val · P&L · Cost</span>'
+            f'  </div>'
+            + rows_html +
+            f'  <div style="{ROW_TOTAL}">'
+            f'    <div style="font-size:0.9rem;">TOTAL</div>'
+            f'    <div style="text-align:right">'
+            f'      <div style="{MV_S}">${total_mv:,.0f}</div>'
+            f'      <div style="{total_pnl_style}">{total_arrow} {total_pct:+.1f}% · ${total_pnl:,.0f}</div>'
+            f'      <div style="{COST_S}">Cost ${total_cost:,.0f}</div>'
+            f'    </div>'
+            f'  </div>'
+            f'</div>'
+        )
+
+        st.markdown(html, unsafe_allow_html=True)
     
     def render_insights(self, df: pd.DataFrame, stats: dict):
         """Render portfolio insights - mobile-first layout"""
