@@ -53,146 +53,151 @@ def setup_page():
         page_icon="📊",
         initial_sidebar_state="collapsed"
     )
-    
-    # Add viewport meta tag for mobile optimization
-    st.markdown("""
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
-    """, unsafe_allow_html=True)
-    
+
     st.markdown("""
     <style>
-        /* Force white background everywhere */
-        .main, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+        /* ── Base ── */
+        html, body, .stApp, [data-testid="stAppViewContainer"],
+        [data-testid="stHeader"], .main, section.main > div {
             background-color: #ffffff !important;
         }
-        
-        /* Ensure all text is dark and visible */
-        .main * {
+
+        /* ── Typography ── */
+        h1, h2, h3, h4, h5, h6,
+        p, span, div, label, li, td, th, caption {
             color: #1a1a1a !important;
-        }
-        
-        /* Headers - dark text, no blur */
-        h1, h2, h3, h4, h5, h6 { 
-            font-weight: 600 !important;
-            letter-spacing: -0.5px !important;
-            color: #1a1a1a !important;
-            background-color: transparent !important;
             text-shadow: none !important;
+            background-color: transparent !important;
         }
-        
-        /* Metric cards - light gray background, dark text */
+        h1 { font-size: 1.6rem !important; font-weight: 700 !important; letter-spacing: -0.5px !important; }
+        h2 { font-size: 1.25rem !important; font-weight: 600 !important; }
+        h3 { font-size: 1.1rem  !important; font-weight: 600 !important; }
+
+        /* ── Metric cards ── */
         [data-testid="stMetric"] {
             background-color: #f8f9fa !important;
-            border: 1px solid #dee2e6 !important;
+            border: 1px solid #e0e0e0 !important;
             border-radius: 12px !important;
-            padding: 1.25rem !important;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+            padding: 0.9rem 1rem !important;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.07) !important;
         }
-        
-        [data-testid="stMetric"] * {
-            color: #1a1a1a !important;
-        }
-        
-        [data-testid="stMetric"] label {
-            font-size: 0.875rem !important;
-            font-weight: 600 !important;
-        }
-        
-        [data-testid="stMetric"] [data-testid="stMetricValue"] {
-            font-size: 1.5rem !important;
-            font-weight: 700 !important;
-        }
-        
-        /* Buttons - white background, dark text */
-        .stButton>button {
+        [data-testid="stMetric"] * { color: #1a1a1a !important; }
+        [data-testid="stMetricLabel"]  { font-size: 0.78rem !important; font-weight: 600 !important; color: #555 !important; }
+        [data-testid="stMetricValue"]  { font-size: 1.3rem  !important; font-weight: 700 !important; }
+        [data-testid="stMetricDelta"]  { font-size: 0.8rem  !important; font-weight: 500 !important; }
+
+        /* ── Buttons ── */
+        .stButton > button {
             background-color: #ffffff !important;
             color: #1a1a1a !important;
             border: 2px solid #dee2e6 !important;
-            border-radius: 8px !important;
+            border-radius: 10px !important;
             font-weight: 600 !important;
-            padding: 0.5rem 1.5rem !important;
+            min-height: 44px !important;     /* iOS tap target */
+            width: 100% !important;
         }
-        
-        .stButton>button:hover {
+        .stButton > button:hover {
             background-color: #2E4053 !important;
             color: #ffffff !important;
             border-color: #2E4053 !important;
         }
-        
-        /* Radio buttons */
-        .stRadio label {
-            color: #1a1a1a !important;
-        }
-        
-        /* Tabs - ensure visibility */
+
+        /* ── Tabs ── */
         .stTabs [data-baseweb="tab-list"] {
             background-color: #f8f9fa !important;
+            border-radius: 10px !important;
+            padding: 4px !important;
+            gap: 4px !important;
         }
-        
         .stTabs [data-baseweb="tab"] {
-            color: #495057 !important;
+            color: #555 !important;
             background-color: transparent !important;
+            border-radius: 8px !important;
+            font-size: 0.82rem !important;
+            font-weight: 600 !important;
+            padding: 6px 10px !important;
+            min-height: 36px !important;
         }
-        
         .stTabs [aria-selected="true"] {
             color: #1a1a1a !important;
             background-color: #ffffff !important;
-            font-weight: 700 !important;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
         }
-        
-        /* Tables - white background, dark text */
-        .dataframe {
-            background-color: #ffffff !important;
-            color: #1a1a1a !important;
-        }
-        
+
+        /* ── Radio ── */
+        .stRadio label { color: #1a1a1a !important; font-weight: 500 !important; }
+
+        /* ── Alerts / banners ── */
+        [data-testid="stAlert"] { border-radius: 10px !important; }
+        [data-testid="stAlert"] * { color: #1a1a1a !important; }
+
+        /* ── Tables ── */
+        [data-testid="stDataFrame"] { border-radius: 10px !important; overflow: hidden !important; }
+        .dataframe, .dataframe * { color: #1a1a1a !important; }
         .dataframe thead tr th {
             background-color: #f8f9fa !important;
-            color: #1a1a1a !important;
             font-weight: 700 !important;
+            font-size: 0.8rem !important;
         }
-        
-        .dataframe tbody tr td {
+        .dataframe tbody tr td { background-color: #ffffff !important; font-size: 0.82rem !important; }
+
+        /* ── Progress bar ── */
+        [data-testid="stProgressBar"] > div { background-color: #2E4053 !important; }
+
+        /* ── Hide Streamlit chrome ── */
+        footer, #MainMenu, header { visibility: hidden !important; }
+        [data-testid="stToolbar"]  { display: none !important; }
+
+        /* ── Mobile card grid ── */
+        .metric-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .metric-card {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 12px 14px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        }
+        .metric-card .label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: #666 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-bottom: 4px;
+        }
+        .metric-card .value {
+            font-size: 1.15rem;
+            font-weight: 700;
             color: #1a1a1a !important;
-            background-color: #ffffff !important;
+            line-height: 1.2;
         }
-        
-        /* Captions and small text */
-        .caption, small {
-            color: #6c757d !important;
+        .metric-card .delta {
+            font-size: 0.78rem;
+            font-weight: 600;
+            margin-top: 3px;
         }
-        
-        /* Info/warning/success boxes */
-        .stAlert {
-            background-color: #ffffff !important;
+        .delta-up   { color: #1a9655 !important; }
+        .delta-down { color: #dc3545 !important; }
+        .delta-neu  { color: #555 !important; }
+
+        .section-divider {
+            border: none;
+            border-top: 1px solid #e9ecef;
+            margin: 16px 0;
         }
-        
-        /* Hide Streamlit branding */
-        footer, #MainMenu, header {
-            visibility: hidden !important;
-        }
-        
-        /* Mobile optimizations */
-        @media (max-width: 768px) {
-            [data-testid="stMetric"] {
-                padding: 0.75rem !important;
-            }
-            
-            [data-testid="stMetric"] [data-testid="stMetricValue"] {
-                font-size: 1.25rem !important;
-            }
-            
-            h1 {
-                font-size: 1.5rem !important;
-            }
-            
-            h2 {
-                font-size: 1.25rem !important;
-            }
-            
-            h3 {
-                font-size: 1.1rem !important;
-            }
+
+        /* ── Responsive breakpoints ── */
+        @media (max-width: 480px) {
+            .metric-card .value { font-size: 1rem; }
+            .metric-card .label { font-size: 0.68rem; }
+            [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+            h1 { font-size: 1.35rem !important; }
+            .stTabs [data-baseweb="tab"] { font-size: 0.75rem !important; padding: 5px 7px !important; }
         }
     </style>
     """, unsafe_allow_html=True)
@@ -687,94 +692,52 @@ class Dashboard:
         self.charts = ChartBuilder()
     
     def render_header(self, stats: dict, fx_rate: float):
-        """Render dashboard header with key metrics"""
+        """Render dashboard header with responsive metric cards"""
+
+        def _card(label, value, delta="", delta_dir="neu"):
+            dir_class = {"up": "delta-up", "down": "delta-down", "neu": "delta-neu"}.get(delta_dir, "delta-neu")
+            arrow = "▲ " if delta_dir == "up" else ("▼ " if delta_dir == "down" else "")
+            delta_html = f'<div class="delta {dir_class}">{arrow}{delta}</div>' if delta else ""
+            return f"""
+            <div class="metric-card">
+                <div class="label">{label}</div>
+                <div class="value">{value}</div>
+                {delta_html}
+            </div>"""
+
+        pnl_dir   = "up"   if stats['total_pnl']  >= 0 else "down"
+        spnl_dir  = "up"   if stats['stock_pnl']  >= 0 else "down"
+        best_dir  = "up"
+        worst_dir = "down"
+
         st.title("📊 Portfolio Command Center")
-        st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Primary metrics row
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric(
-                "Total Value",
-                f"${stats['total_mv']:,.0f}",
-                help="Current market value in AUD"
-            )
-        
-        with col2:
-            delta_color = "normal" if stats['total_pnl'] >= 0 else "inverse"
-            st.metric(
-                "Total P&L",
-                f"${stats['total_pnl']:,.0f}",
-                f"{stats['pnl_pct']:.2f}%",
-                delta_color=delta_color,
-                help="Total Value - Capital Injected"
-            )
-        
-        with col3:
-            st.metric(
-                "Capital Injected",
-                f"${stats['capital_injected']:,.0f}",
-                help="Total capital invested"
-            )
-        
-        with col4:
-            # Show cash amount instead of percentage in delta
-            st.metric(
-                "Stock Positions",
-                f"{stats['num_positions']}",
-                f"${stats['cash_value']:,.0f} cash",
-                help="Unique stocks held (excluding cash)"
-            )
-        
-        with col5:
-            st.metric(
-                "AUD/USD",
-                f"{fx_rate:.4f}",
-                help="Current exchange rate"
-            )
-        
-        # Secondary metrics row
-        st.markdown("---")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            # Show stock performance P&L
-            delta_color = "normal" if stats['stock_pnl'] >= 0 else "inverse"
-            st.metric(
-                "Stock Performance",
-                f"${stats['stock_pnl']:,.0f}",
-                f"{stats['stock_pnl_pct']:.2f}%",
-                delta_color=delta_color,
-                help="Gains/losses from stock price changes"
-            )
-        
-        with col2:
-            st.metric(
-                "Winners", 
-                f"{stats['num_winners']}",
-                f"+${stats['winners_value']:,.0f}",
-                delta_color="normal",
-                help="Profitable positions"
-            )
-        
-        with col3:
-            st.metric(
-                "Best Performer",
-                stats['best_performer'],
-                f"+{stats['best_performer_pct']:.1f}%",
-                delta_color="normal",
-                help="Top gainer"
-            )
-        
-        with col4:
-            st.metric(
-                "Worst Performer",
-                stats['worst_performer'],
-                f"{stats['worst_performer_pct']:.1f}%",
-                delta_color="inverse",
-                help="Biggest loser"
-            )
+        st.caption(f"Updated: {datetime.now().strftime('%d %b %Y  %H:%M')}")
+
+        # ── Row 1: 2×2 grid ──────────────────────────────────────────────────
+        st.markdown(f"""
+        <div class="metric-grid">
+            {_card("Total Value",      f"${stats['total_mv']:,.0f}")}
+            {_card("Total P&L",        f"${stats['total_pnl']:,.0f}",
+                   f"{stats['pnl_pct']:.2f}%", pnl_dir)}
+            {_card("Capital Injected", f"${stats['capital_injected']:,.0f}")}
+            {_card("Stock Positions",  str(stats['num_positions']),
+                   f"${stats['cash_value']:,.0f} cash", "neu")}
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── Row 2: 2×2 grid ──────────────────────────────────────────────────
+        st.markdown(f"""
+        <div class="metric-grid">
+            {_card("Stock Performance", f"${stats['stock_pnl']:,.0f}",
+                   f"{stats['stock_pnl_pct']:.2f}%", spnl_dir)}
+            {_card("AUD / USD", f"{fx_rate:.4f}")}
+            {_card("Best Performer",  stats['best_performer'],
+                   f"+{stats['best_performer_pct']:.1f}%", best_dir)}
+            {_card("Worst Performer", stats['worst_performer'],
+                   f"{stats['worst_performer_pct']:.1f}%", worst_dir)}
+        </div>
+        <hr class="section-divider">
+        """, unsafe_allow_html=True)
     
     def render_charts(self, df: pd.DataFrame):
         """Render portfolio visualization charts"""
@@ -852,214 +815,164 @@ class Dashboard:
                 st.metric("Win Rate", f"{win_rate:.1f}%")
     
     def render_holdings_table(self, df: pd.DataFrame):
-        """Render detailed holdings table with view options"""
+        """Render holdings table - mobile optimised"""
         st.markdown("---")
-        st.subheader("📋 Holdings Detail")
-        
-        # View mode selector
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            view_mode = st.radio(
-                "View",
-                ["Summary", "Detailed"],
-                horizontal=True,
-                label_visibility="collapsed"
-            )
-        
-        # Prepare data based on view mode
+        st.subheader("📋 Holdings")
+
+        view_mode = st.radio(
+            "View",
+            ["Summary", "Detailed"],
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+
+        df_display = (
+            self._prepare_summary_view(df) if view_mode == "Summary"
+            else self._prepare_detailed_view(df)
+        )
+
+        # ── Column order: most useful → least on mobile ───────────────────
         if view_mode == "Summary":
-            df_display = self._prepare_summary_view(df)
+            col_order = ['Ticker', 'MV_AUD', 'PnL_%', 'PnL_AUD', 'Cost_AUD', 'Shares', 'Current_Price', 'Avg_Cost']
         else:
-            df_display = self._prepare_detailed_view(df)
-        
-        # Configure column order for better mobile display
-        # Put most important columns first
-        if view_mode == "Summary":
-            column_order = ['Ticker', 'MV_AUD', 'PnL_AUD', 'PnL_%', 'Shares', 'Current_Price', 'Avg_Cost', 'Cost_AUD']
-        else:
-            column_order = ['Ticker', 'Platform', 'MV_AUD', 'PnL_AUD', 'PnL_%', 'Shares', 'Current_Price', 'Avg_Cost', 'Cost_AUD']
-        
-        # Reorder columns
-        available_cols = [col for col in column_order if col in df_display.columns]
-        df_display = df_display[available_cols]
-        
-        # Render table with column configuration
+            col_order = ['Ticker', 'Platform', 'MV_AUD', 'PnL_%', 'PnL_AUD', 'Cost_AUD', 'Shares', 'Current_Price', 'Avg_Cost']
+
+        available = [c for c in col_order if c in df_display.columns]
+        df_display = df_display[available]
+
         st.dataframe(
             df_display.style
-            .format(self._get_format_dict(view_mode), na_rep="—")
-            .apply(self._highlight_totals, axis=1)
-            .apply(self._color_pnl, subset=['PnL_AUD'] if 'PnL_AUD' in df_display.columns else [], axis=0)
-            .apply(self._color_pnl, subset=['PnL_%'] if 'PnL_%' in df_display.columns else [], axis=0),
+                .format(self._get_format_dict(view_mode), na_rep="—")
+                .apply(self._highlight_totals, axis=1)
+                .apply(self._color_pnl, subset=['PnL_AUD'] if 'PnL_AUD' in df_display.columns else [], axis=0)
+                .apply(self._color_pnl, subset=['PnL_%']   if 'PnL_%'   in df_display.columns else [], axis=0),
             use_container_width=True,
-            height=500,
+            height=480,
             column_config={
-                "Ticker": st.column_config.TextColumn("Stock", width="small"),
-                "Platform": st.column_config.TextColumn("Platform", width="small"),
-                "MV_AUD": st.column_config.NumberColumn("Market Value", width="medium"),
-                "Cost_AUD": st.column_config.NumberColumn("Cost", width="medium"),
-                "PnL_AUD": st.column_config.NumberColumn("P&L $", width="medium"),
-                "PnL_%": st.column_config.NumberColumn("P&L %", width="small"),
-                "Shares": st.column_config.NumberColumn("Shares", width="small"),
-                "Current_Price": st.column_config.NumberColumn("Price", width="small"),
-                "Avg_Cost": st.column_config.NumberColumn("Avg Cost", width="small"),
+                "Ticker":        st.column_config.TextColumn("Stock",    width="small"),
+                "Platform":      st.column_config.TextColumn("Platform", width="small"),
+                "MV_AUD":        st.column_config.NumberColumn("Mkt Val $", format="$%,.0f", width="medium"),
+                "PnL_%":         st.column_config.NumberColumn("P&L %",    format="%+.2f%%", width="small"),
+                "PnL_AUD":       st.column_config.NumberColumn("P&L $",    format="$%,.0f",  width="medium"),
+                "Cost_AUD":      st.column_config.NumberColumn("Cost $",   format="$%,.0f",  width="medium"),
+                "Shares":        st.column_config.NumberColumn("Shares",   format="%.2f",    width="small"),
+                "Current_Price": st.column_config.NumberColumn("Price",    format="%.2f",    width="small"),
+                "Avg_Cost":      st.column_config.NumberColumn("Avg Cost", format="%.2f",    width="small"),
             }
         )
     
     def render_insights(self, df: pd.DataFrame, stats: dict):
-        """Render portfolio insights and risk metrics"""
+        """Render portfolio insights - mobile-first layout"""
         st.markdown("---")
         st.subheader("💡 Portfolio Insights")
-        
-        equity_df = df[df['Ticker'] != 'Cash'].copy()
-        
-        # Aggregate by ticker for unique positions
-        equity_agg = equity_df.groupby('Ticker').agg({
-            'MV_AUD': 'sum',
-            'PnL_AUD': 'sum'
-        }).reset_index()
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### 🎯 Top Holdings")
-            
-            # Show top 10 holdings with clear percentages
-            top_holdings = equity_agg.nlargest(10, 'MV_AUD').copy()
-            top_holdings['% of Stocks'] = (top_holdings['MV_AUD'] / stats['equity_value'] * 100)
-            top_holdings['% of Total'] = (top_holdings['MV_AUD'] / stats['total_mv'] * 100)
-            
-            # Display as table
-            display_df = top_holdings[['Ticker', '% of Stocks', '% of Total']].copy()
-            display_df['% of Stocks'] = display_df['% of Stocks'].apply(lambda x: f"{x:.1f}%")
-            display_df['% of Total'] = display_df['% of Total'].apply(lambda x: f"{x:.1f}%")
-            
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
-                height=400
-            )
-        
-        with col2:
-            st.markdown("#### 📊 Concentration Metrics")
-            
-            # Calculate concentrations
-            top_3 = equity_agg.nlargest(3, 'MV_AUD')['MV_AUD'].sum()
-            top_5 = equity_agg.nlargest(5, 'MV_AUD')['MV_AUD'].sum()
-            top_10 = equity_agg.nlargest(10, 'MV_AUD')['MV_AUD'].sum()
-            
-            top_3_pct = (top_3 / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
-            top_5_pct = (top_5 / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
-            top_10_pct = (top_10 / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
-            
-            # Display in clear metrics format
-            st.metric(
-                "Top 3 Holdings",
-                f"{top_3_pct:.1f}%",
-                f"${top_3:,.0f}",
-                help="Percentage of stock portfolio (excluding cash)"
-            )
-            
-            st.metric(
-                "Top 5 Holdings",
-                f"{top_5_pct:.1f}%",
-                f"${top_5:,.0f}",
-                help="Percentage of stock portfolio (excluding cash)"
-            )
-            
-            st.metric(
-                "Top 10 Holdings",
-                f"{top_10_pct:.1f}%",
-                f"${top_10:,.0f}",
-                help="Percentage of stock portfolio (excluding cash)"
-            )
-            
-            # Risk assessment
-            st.markdown("---")
-            if top_3_pct > 60:
-                st.error("🔴 **High Risk:** Top 3 = >60% of stocks")
-                st.caption("Consider rebalancing to reduce concentration")
-            elif top_3_pct > 50:
-                st.warning("🟡 **Moderate Risk:** Top 3 = >50% of stocks")
-                st.caption("Watch concentration levels")
-            else:
-                st.success("🟢 **Well Diversified:** Top 3 = <50%")
-                st.caption("Good diversification")
-        
-        # Cash allocation section
+
+        equity_df  = df[df['Ticker'] != 'Cash'].copy()
+        equity_agg = equity_df.groupby('Ticker').agg(
+            MV_AUD=('MV_AUD', 'sum'),
+            PnL_AUD=('PnL_AUD', 'sum')
+        ).reset_index()
+
+        ev = stats['equity_value'] if stats['equity_value'] > 0 else 1
+
+        # ── Concentration ────────────────────────────────────────────────────
+        st.markdown("#### 🎯 Top Holdings")
+
+        top_holdings = equity_agg.nlargest(10, 'MV_AUD').copy()
+        top_holdings['% of Stocks'] = (top_holdings['MV_AUD'] / ev * 100).round(1)
+        top_holdings['% of Total']  = (top_holdings['MV_AUD'] / stats['total_mv'] * 100).round(1)
+        top_holdings['Market Value'] = top_holdings['MV_AUD'].apply(lambda x: f"${x:,.0f}")
+        top_holdings['% of Stocks']  = top_holdings['% of Stocks'].apply(lambda x: f"{x:.1f}%")
+        top_holdings['% of Total']   = top_holdings['% of Total'].apply(lambda x: f"{x:.1f}%")
+
+        st.dataframe(
+            top_holdings[['Ticker', 'Market Value', '% of Stocks', '% of Total']],
+            use_container_width=True,
+            hide_index=True,
+            height=360,
+            column_config={
+                "Ticker":       st.column_config.TextColumn("Stock",        width="small"),
+                "Market Value": st.column_config.TextColumn("Value",        width="medium"),
+                "% of Stocks":  st.column_config.TextColumn("% Stocks",     width="small"),
+                "% of Total":   st.column_config.TextColumn("% Portfolio",  width="small"),
+            }
+        )
+
+        # ── Concentration metric cards ────────────────────────────────────
+        top_3_pct  = equity_agg.nlargest(3,  'MV_AUD')['MV_AUD'].sum() / ev * 100
+        top_5_pct  = equity_agg.nlargest(5,  'MV_AUD')['MV_AUD'].sum() / ev * 100
+        top_10_pct = equity_agg.nlargest(10, 'MV_AUD')['MV_AUD'].sum() / ev * 100
+
+        st.markdown(f"""
+        <div class="metric-grid">
+            <div class="metric-card">
+                <div class="label">Top 3 Holdings</div>
+                <div class="value">{top_3_pct:.1f}%</div>
+                <div class="delta delta-neu">of stock portfolio</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Top 5 Holdings</div>
+                <div class="value">{top_5_pct:.1f}%</div>
+                <div class="delta delta-neu">of stock portfolio</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Risk badge
+        if top_3_pct > 60:
+            st.error("🔴 High concentration — top 3 stocks = over 60% of equities. Consider rebalancing.")
+        elif top_3_pct > 50:
+            st.warning("🟡 Moderate concentration — top 3 stocks = over 50% of equities.")
+        else:
+            st.success("🟢 Well diversified — top 3 stocks = under 50% of equities.")
+
+        # ── Cash vs Stocks ───────────────────────────────────────────────────
         st.markdown("---")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric(
-                "💵 Cash Balance",
-                f"${stats['cash_value']:,.0f}",
-                f"{stats['cash_pct']:.1f}% of total",
-                help="Total cash across all platforms"
-            )
-        
-        with col2:
-            st.metric(
-                "📈 Stock Value",
-                f"${stats['equity_value']:,.0f}",
-                f"{stats['equity_pct']:.1f}% of total",
-                help="Total value of all stock positions"
-            )
-        
-        with col3:
-            # Cash status
-            if stats['cash_pct'] > 30:
-                st.warning("⚠️ High Cash")
-                st.caption(f"{stats['cash_pct']:.1f}% uninvested - consider deploying")
-            elif stats['cash_pct'] < 5:
-                st.warning("⚠️ Low Cash")
-                st.caption(f"Only {stats['cash_pct']:.1f}% - limited buying power")
-            else:
-                st.success("✅ Balanced")
-                st.caption(f"{stats['cash_pct']:.1f}% cash - good balance")
-        
-        # Diversification score
+        st.markdown("#### 💵 Cash vs Stocks")
+
+        cash_pct   = stats['cash_pct']
+        equity_pct = stats['equity_pct']
+
+        st.markdown(f"""
+        <div class="metric-grid">
+            <div class="metric-card">
+                <div class="label">Cash Balance</div>
+                <div class="value">${stats['cash_value']:,.0f}</div>
+                <div class="delta delta-neu">{cash_pct:.1f}% of portfolio</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Stock Value</div>
+                <div class="value">${stats['equity_value']:,.0f}</div>
+                <div class="delta delta-neu">{equity_pct:.1f}% of portfolio</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if cash_pct > 30:
+            st.warning(f"⚠️ **{cash_pct:.1f}% in cash** — large uninvested balance. Consider deploying into positions.")
+        elif cash_pct < 5:
+            st.warning(f"⚠️ **Only {cash_pct:.1f}% cash** — very low buying power for new opportunities.")
+        else:
+            st.success(f"✅ **{cash_pct:.1f}% cash** — healthy reserve with room to invest.")
+
+        # ── Diversification Score ─────────────────────────────────────────────
         st.markdown("---")
         st.markdown("#### 🎲 Diversification Score")
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            # Calculate Herfindahl-Hirschman Index
-            position_pcts = (equity_agg['MV_AUD'] / stats['equity_value'] * 100) if stats['equity_value'] > 0 else 0
-            hhi = (position_pcts ** 2).sum() if stats['equity_value'] > 0 else 0
-            
-            # Invert HHI to create a diversification score (0-100)
-            # Perfect diversification (equal weights) would give low HHI
-            # We want high score = good diversification
-            max_hhi = 10000  # Theoretical max (100% in one position)
-            diversification_score = ((max_hhi - hhi) / max_hhi * 100)
-            
-            # Show progress bar
-            if diversification_score >= 70:
-                st.success(f"**Score: {diversification_score:.0f}/100** - Excellent diversification! 🎯")
-            elif diversification_score >= 50:
-                st.info(f"**Score: {diversification_score:.0f}/100** - Good diversification 👍")
-            elif diversification_score >= 30:
-                st.warning(f"**Score: {diversification_score:.0f}/100** - Moderate diversification ⚠️")
-            else:
-                st.error(f"**Score: {diversification_score:.0f}/100** - Needs diversification 🔴")
-            
-            st.progress(diversification_score / 100)
-        
-        with col2:
-            st.metric(
-                "HHI Index",
-                f"{hhi:.0f}",
-                help="Lower = more diversified"
-            )
-            
-            if hhi < 1500:
-                st.caption("🟢 Low concentration")
-            elif hhi < 2500:
-                st.caption("🟡 Moderate concentration")
-            else:
-                st.caption("🔴 High concentration")
+
+        position_pcts     = equity_agg['MV_AUD'] / ev * 100
+        hhi               = (position_pcts ** 2).sum()
+        div_score         = ((10000 - hhi) / 10000 * 100)
+
+        if div_score >= 70:
+            st.success(f"**{div_score:.0f} / 100 — Excellent 🎯**")
+        elif div_score >= 50:
+            st.info(f"**{div_score:.0f} / 100 — Good 👍**")
+        elif div_score >= 30:
+            st.warning(f"**{div_score:.0f} / 100 — Moderate ⚠️**")
+        else:
+            st.error(f"**{div_score:.0f} / 100 — Concentrated 🔴**")
+
+        st.progress(div_score / 100)
+        st.caption("Score based on how evenly spread your equity positions are. 100 = perfectly equal weight.")
     
     def _prepare_summary_view(self, df: pd.DataFrame) -> pd.DataFrame:
         """Aggregate holdings by ticker"""
@@ -1144,15 +1057,13 @@ class Dashboard:
         ]
     
     def render_actions(self):
-        """Render action buttons"""
+        """Render action buttons - full width on mobile"""
         st.markdown("---")
-        col1, col2, col3 = st.columns([1, 1, 2])
-        
+        col1, col2 = st.columns(2)
         with col1:
             if st.button("🔄 Refresh Data", use_container_width=True):
                 st.cache_data.clear()
                 st.rerun()
-        
         with col2:
             if st.button("📥 Export CSV", use_container_width=True):
                 st.info("Export feature coming soon")
