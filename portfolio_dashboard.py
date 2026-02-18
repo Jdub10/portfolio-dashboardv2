@@ -55,6 +55,12 @@ def setup_page():
     )
 
     st.markdown("""
+    <script>
+    // Store viewport width in session storage for Python to read
+    const width = window.innerWidth;
+    const isMobile = width < 768;
+    window.parent.postMessage({type: 'streamlit:setComponentValue', value: {mobile: isMobile}}, '*');
+    </script>
     <style>
         /* ── Base ── */
         html, body, .stApp, [data-testid="stAppViewContainer"],
@@ -93,7 +99,7 @@ def setup_page():
             border: 2px solid #dee2e6 !important;
             border-radius: 10px !important;
             font-weight: 600 !important;
-            min-height: 44px !important;     /* iOS tap target */
+            min-height: 44px !important;
             width: 100% !important;
         }
         .stButton > button:hover {
@@ -127,7 +133,7 @@ def setup_page():
         /* ── Radio ── */
         .stRadio label { color: #1a1a1a !important; font-weight: 500 !important; }
 
-        /* ── Alerts / banners ── */
+        /* ── Alerts ── */
         [data-testid="stAlert"] { border-radius: 10px !important; }
         [data-testid="stAlert"] * { color: #1a1a1a !important; }
 
@@ -141,63 +147,16 @@ def setup_page():
         }
         .dataframe tbody tr td { background-color: #ffffff !important; font-size: 0.82rem !important; }
 
-        /* ── Progress bar ── */
+        /* ── Progress ── */
         [data-testid="stProgressBar"] > div { background-color: #2E4053 !important; }
 
-        /* ── Hide Streamlit chrome ── */
+        /* ── Hide chrome ── */
         footer, #MainMenu, header { visibility: hidden !important; }
         [data-testid="stToolbar"]  { display: none !important; }
 
-        /* ── Mobile card grid ── */
-        .metric-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
-        .metric-card {
-            background: #f8f9fa;
-            border: 1px solid #e0e0e0;
-            border-radius: 12px;
-            padding: 12px 14px;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-        }
-        .metric-card .label {
-            font-size: 0.72rem;
-            font-weight: 600;
-            color: #666 !important;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            margin-bottom: 4px;
-        }
-        .metric-card .value {
-            font-size: 1.15rem;
-            font-weight: 700;
-            color: #1a1a1a !important;
-            line-height: 1.2;
-        }
-        .metric-card .delta {
-            font-size: 0.78rem;
-            font-weight: 600;
-            margin-top: 3px;
-        }
-        .delta-up   { color: #1a9655 !important; }
-        .delta-down { color: #dc3545 !important; }
-        .delta-neu  { color: #555 !important; }
-
-        .section-divider {
-            border: none;
-            border-top: 1px solid #e9ecef;
-            margin: 16px 0;
-        }
-
-        /* ── Responsive breakpoints ── */
-        @media (max-width: 480px) {
-            .metric-card .value { font-size: 1rem; }
-            .metric-card .label { font-size: 0.68rem; }
-            [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
-            h1 { font-size: 1.35rem !important; }
-            .stTabs [data-baseweb="tab"] { font-size: 0.75rem !important; padding: 5px 7px !important; }
+        /* ── Mobile-specific hiding ── */
+        @media (max-width: 768px) {
+            .hide-on-mobile { display: none !important; }
         }
     </style>
     """, unsafe_allow_html=True)
@@ -833,120 +792,124 @@ class Dashboard:
                 win_rate = (len(equity_df[equity_df['PnL_AUD'] > 0]) / len(equity_df) * 100) if not equity_df.empty else 0
                 st.metric("Win Rate", f"{win_rate:.1f}%")
     
-    def render_holdings_table(self, df: pd.DataFrame):
-        """Render holdings - simple card list on mobile, full table on desktop"""
+    def render_holdings_table(self, df: pd.DataFrame, force_mobile: bool = False):
+        """Render holdings - auto-adapts to mobile or desktop mode"""
         st.markdown("---")
         st.subheader("📋 Holdings")
 
-        view_mode = st.radio(
-            "View", ["Summary", "Detailed"],
-            horizontal=True, label_visibility="collapsed"
-        )
+        if force_mobile:
+            # ═══════════════════════════════════════════════════════════════
+            # MOBILE MODE - Clean HTML card list (no choice, just show it)
+            # ═══════════════════════════════════════════════════════════════
+            equity_df = df[df['Ticker'] != 'Cash'].copy()
+            mob = equity_df.groupby('Ticker').agg(
+                MV_AUD  =('MV_AUD',  'sum'),
+                Cost_AUD=('Cost_AUD','sum'),
+                PnL_AUD =('PnL_AUD', 'sum'),
+            ).reset_index()
+            mob['PnL_%'] = (mob['PnL_AUD'] / mob['Cost_AUD'] * 100).fillna(0)
+            mob = mob.sort_values('MV_AUD', ascending=False)
 
-        df_display = (
-            self._prepare_summary_view(df) if view_mode == "Summary"
-            else self._prepare_detailed_view(df)
-        )
+            total_mv   = mob['MV_AUD'].sum()
+            total_cost = mob['Cost_AUD'].sum()
+            total_pnl  = mob['PnL_AUD'].sum()
+            total_pct  = (total_pnl / total_cost * 100) if total_cost else 0
 
-        # ── Column order ───────────────────────────────────────────────────
-        if view_mode == "Summary":
-            col_order = ['Ticker','MV_AUD','PnL_%','PnL_AUD','Cost_AUD','Shares','Current_Price','Avg_Cost']
-        else:
-            col_order = ['Ticker','Platform','MV_AUD','PnL_%','PnL_AUD','Cost_AUD','Shares','Current_Price','Avg_Cost']
+            # Inline styles
+            ROW_BASE   = "display:flex;justify-content:space-between;align-items:center;padding:11px 15px;border-bottom:1px solid #f0f0f0;"
+            ROW_TOTAL  = ROW_BASE + "background:#f8f9fa;font-weight:700;border-top:2px solid #2E4053;"
+            WRAP       = "background:#fff;border:1px solid #e0e0e0;border-radius:12px;margin:12px 0;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);"
+            HDR        = "display:flex;justify-content:space-between;padding:11px 15px;background:linear-gradient(135deg,#2E4053 0%,#34495e 100%);color:#fff;"
+            HDR_T      = "color:#fff !important;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;"
+            TICKER_S   = "font-weight:700;font-size:1.05rem;color:#1a1a1a;min-width:70px;"
+            MV_S       = "font-size:1rem;font-weight:700;color:#1a1a1a;margin-bottom:4px;"
+            PNL_UP     = "font-size:0.88rem;font-weight:600;color:#1a9655;margin-bottom:3px;"
+            PNL_DN     = "font-size:0.88rem;font-weight:600;color:#dc3545;margin-bottom:3px;"
+            COST_S     = "font-size:0.78rem;color:#888;"
 
-        available  = [c for c in col_order if c in df_display.columns]
-        df_display = df_display[available]
+            rows_html = ""
+            for _, r in mob.iterrows():
+                pnl_style = PNL_UP if r['PnL_AUD'] >= 0 else PNL_DN
+                arrow     = "▲" if r['PnL_AUD'] >= 0 else "▼"
+                rows_html += (
+                    f'<div style="{ROW_BASE}">'
+                    f'  <div style="{TICKER_S}">{r["Ticker"]}</div>'
+                    f'  <div style="flex:1;text-align:right;">'
+                    f'    <div style="{MV_S}">${r["MV_AUD"]:,.0f}</div>'
+                    f'    <div style="{pnl_style}">{arrow} {r["PnL_%"]:+.1f}% (${r["PnL_AUD"]:,.0f})</div>'
+                    f'    <div style="{COST_S}">Cost: ${r["Cost_AUD"]:,.0f}</div>'
+                    f'  </div>'
+                    f'</div>'
+                )
 
-        # ── Desktop: styled dataframe ──────────────────────────────────────
-        st.dataframe(
-            df_display.style
-                .format(self._get_format_dict(view_mode), na_rep="—")
-                .apply(self._highlight_totals, axis=1)
-                .apply(self._color_pnl, subset=['PnL_AUD'] if 'PnL_AUD' in df_display.columns else [], axis=0)
-                .apply(self._color_pnl, subset=['PnL_%']   if 'PnL_%'   in df_display.columns else [], axis=0),
-            use_container_width=True,
-            height=480,
-            column_config={
-                "Ticker":        st.column_config.TextColumn("Stock",    width="small"),
-                "Platform":      st.column_config.TextColumn("Platform", width="small"),
-                "MV_AUD":        st.column_config.TextColumn("Mkt Val",  width="medium"),
-                "PnL_%":         st.column_config.TextColumn("P&L %",   width="small"),
-                "PnL_AUD":       st.column_config.TextColumn("P&L $",   width="medium"),
-                "Cost_AUD":      st.column_config.TextColumn("Cost $",   width="medium"),
-                "Shares":        st.column_config.TextColumn("Shares",   width="small"),
-                "Current_Price": st.column_config.TextColumn("Price",    width="small"),
-                "Avg_Cost":      st.column_config.TextColumn("Avg Cost", width="small"),
-            }
-        )
+            total_pnl_style = PNL_UP if total_pnl >= 0 else PNL_DN
+            total_arrow     = "▲" if total_pnl >= 0 else "▼"
 
-        # ── Mobile: clean HTML summary with totals always visible ──────────
-        st.markdown("##### 📱 Mobile Summary")
-        st.caption("Scroll table above for full detail · Key figures below")
-
-        # Aggregate to unique tickers for the mobile summary
-        equity_df = df[df['Ticker'] != 'Cash'].copy()
-        mob = equity_df.groupby('Ticker').agg(
-            MV_AUD  =('MV_AUD',  'sum'),
-            Cost_AUD=('Cost_AUD','sum'),
-            PnL_AUD =('PnL_AUD', 'sum'),
-        ).reset_index()
-        mob['PnL_%'] = (mob['PnL_AUD'] / mob['Cost_AUD'] * 100).fillna(0)
-        mob = mob.sort_values('MV_AUD', ascending=False)
-
-        total_mv   = mob['MV_AUD'].sum()
-        total_cost = mob['Cost_AUD'].sum()
-        total_pnl  = mob['PnL_AUD'].sum()
-        total_pct  = (total_pnl / total_cost * 100) if total_cost else 0
-
-        # Build HTML table — fully inline styled, works on Safari iOS
-        ROW_BASE   = "display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-bottom:1px solid #f0f0f0;"
-        ROW_TOTAL  = ROW_BASE + "background:#f8f9fa;font-weight:700;border-radius:0 0 10px 10px;"
-        WRAP       = "background:#fff;border:1px solid #e0e0e0;border-radius:10px;margin-bottom:12px;overflow:hidden;"
-        HDR        = "display:flex;justify-content:space-between;padding:7px 12px;background:#2E4053;border-radius:10px 10px 0 0;"
-        HDR_T      = "color:#fff !important;font-size:0.7rem;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;"
-        TICKER_S   = "font-weight:700;font-size:0.95rem;color:#1a1a1a;"
-        MV_S       = "font-size:0.9rem;font-weight:600;color:#1a1a1a;text-align:right;"
-        PNL_UP     = "font-size:0.82rem;font-weight:600;color:#1a9655;text-align:right;"
-        PNL_DN     = "font-size:0.82rem;font-weight:600;color:#dc3545;text-align:right;"
-        COST_S     = "font-size:0.78rem;color:#666;text-align:right;"
-
-        rows_html = ""
-        for _, r in mob.iterrows():
-            pnl_style = PNL_UP if r['PnL_AUD'] >= 0 else PNL_DN
-            arrow     = "▲" if r['PnL_AUD'] >= 0 else "▼"
-            rows_html += (
-                f'<div style="{ROW_BASE}">'
-                f'  <div style="{TICKER_S}">{r["Ticker"]}</div>'
-                f'  <div style="text-align:right">'
-                f'    <div style="{MV_S}">${r["MV_AUD"]:,.0f}</div>'
-                f'    <div style="{pnl_style}">{arrow} {r["PnL_%"]:+.1f}% · ${r["PnL_AUD"]:,.0f}</div>'
-                f'    <div style="{COST_S}">Cost ${r["Cost_AUD"]:,.0f}</div>'
+            html = (
+                f'<div style="{WRAP}">'
+                f'  <div style="{HDR}">'
+                f'    <span style="{HDR_T}">Stock</span>'
+                f'    <span style="{HDR_T}">Value · P&L · Cost</span>'
+                f'  </div>'
+                + rows_html +
+                f'  <div style="{ROW_TOTAL}">'
+                f'    <div style="font-size:1.05rem;font-weight:700;">TOTAL</div>'
+                f'    <div style="flex:1;text-align:right;">'
+                f'      <div style="{MV_S}">${total_mv:,.0f}</div>'
+                f'      <div style="{total_pnl_style}">{total_arrow} {total_pct:+.1f}% (${total_pnl:,.0f})</div>'
+                f'      <div style="{COST_S}">Cost: ${total_cost:,.0f}</div>'
+                f'    </div>'
                 f'  </div>'
                 f'</div>'
             )
 
-        total_pnl_style = PNL_UP if total_pnl >= 0 else PNL_DN
-        total_arrow     = "▲" if total_pnl >= 0 else "▼"
+            st.markdown(html, unsafe_allow_html=True)
 
-        html = (
-            f'<div style="{WRAP}">'
-            f'  <div style="{HDR}">'
-            f'    <span style="{HDR_T}">Stock</span>'
-            f'    <span style="{HDR_T}">Mkt Val · P&L · Cost</span>'
-            f'  </div>'
-            + rows_html +
-            f'  <div style="{ROW_TOTAL}">'
-            f'    <div style="font-size:0.9rem;">TOTAL</div>'
-            f'    <div style="text-align:right">'
-            f'      <div style="{MV_S}">${total_mv:,.0f}</div>'
-            f'      <div style="{total_pnl_style}">{total_arrow} {total_pct:+.1f}% · ${total_pnl:,.0f}</div>'
-            f'      <div style="{COST_S}">Cost ${total_cost:,.0f}</div>'
-            f'    </div>'
-            f'  </div>'
-            f'</div>'
-        )
+        else:
+            # ═══════════════════════════════════════════════════════════════
+            # DESKTOP MODE - Full styled dataframe with options
+            # ═══════════════════════════════════════════════════════════════
+            view_choice = st.radio(
+                "Table Style",
+                ["Summary", "Detailed"],
+                horizontal=True,
+                label_visibility="collapsed"
+            )
 
-        st.markdown(html, unsafe_allow_html=True)
+            df_display = (
+                self._prepare_summary_view(df) if view_choice == "Summary"
+                else self._prepare_detailed_view(df)
+            )
+
+            # Column order
+            if view_choice == "Summary":
+                col_order = ['Ticker','MV_AUD','PnL_%','PnL_AUD','Cost_AUD','Shares','Current_Price','Avg_Cost']
+            else:
+                col_order = ['Ticker','Platform','MV_AUD','PnL_%','PnL_AUD','Cost_AUD','Shares','Current_Price','Avg_Cost']
+
+            available  = [c for c in col_order if c in df_display.columns]
+            df_display = df_display[available]
+
+            st.dataframe(
+                df_display.style
+                    .format(self._get_format_dict(view_choice), na_rep="—")
+                    .apply(self._highlight_totals, axis=1)
+                    .apply(self._color_pnl, subset=['PnL_AUD'] if 'PnL_AUD' in df_display.columns else [], axis=0)
+                    .apply(self._color_pnl, subset=['PnL_%']   if 'PnL_%'   in df_display.columns else [], axis=0),
+                use_container_width=True,
+                height=520,
+                column_config={
+                    "Ticker":        st.column_config.TextColumn("Stock",    width="small"),
+                    "Platform":      st.column_config.TextColumn("Platform", width="small"),
+                    "MV_AUD":        st.column_config.TextColumn("Mkt Val",  width="medium"),
+                    "PnL_%":         st.column_config.TextColumn("P&L %",   width="small"),
+                    "PnL_AUD":       st.column_config.TextColumn("P&L $",   width="medium"),
+                    "Cost_AUD":      st.column_config.TextColumn("Cost $",   width="medium"),
+                    "Shares":        st.column_config.TextColumn("Shares",   width="small"),
+                    "Current_Price": st.column_config.TextColumn("Price",    width="small"),
+                    "Avg_Cost":      st.column_config.TextColumn("Avg Cost", width="small"),
+                }
+            )
     
     def render_insights(self, df: pd.DataFrame, stats: dict):
         """Render portfolio insights - mobile-first layout"""
@@ -1146,16 +1109,59 @@ class Dashboard:
         ]
     
     def render_actions(self):
-        """Render action buttons - full width on mobile"""
+        """Render action buttons with working download"""
         st.markdown("---")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🔄 Refresh Data", use_container_width=True):
+            if st.button("🔄 Refresh", use_container_width=True):
                 st.cache_data.clear()
                 st.rerun()
         with col2:
-            if st.button("📥 Export CSV", use_container_width=True):
-                st.info("Export feature coming soon")
+            # Download button placeholder - actual download below
+            st.markdown("👇 **Download below**")
+    
+    def render_download(self, df: pd.DataFrame):
+        """Render CSV download for mobile and desktop"""
+        st.markdown("---")
+        st.subheader("📥 Download Portfolio")
+        
+        # Prepare clean summary for download
+        equity_df = df[df['Ticker'] != 'Cash'].copy()
+        download_df = equity_df.groupby('Ticker').agg({
+            'MV_AUD': 'sum',
+            'Cost_AUD': 'sum',
+            'PnL_AUD': 'sum',
+            'Shares': 'sum',
+        }).reset_index()
+        download_df['PnL_%'] = (download_df['PnL_AUD'] / download_df['Cost_AUD'] * 100).round(2)
+        download_df = download_df.sort_values('MV_AUD', ascending=False)
+        
+        # Format for readability
+        download_df['MV_AUD'] = download_df['MV_AUD'].round(0)
+        download_df['Cost_AUD'] = download_df['Cost_AUD'].round(0)
+        download_df['PnL_AUD'] = download_df['PnL_AUD'].round(0)
+        download_df['Shares'] = download_df['Shares'].round(2)
+        
+        # Add totals row
+        total_row = pd.DataFrame({
+            'Ticker': ['TOTAL'],
+            'MV_AUD': [download_df['MV_AUD'].sum()],
+            'Cost_AUD': [download_df['Cost_AUD'].sum()],
+            'PnL_AUD': [download_df['PnL_AUD'].sum()],
+            'Shares': [''],
+            'PnL_%': [(download_df['PnL_AUD'].sum() / download_df['Cost_AUD'].sum() * 100).round(2)]
+        })
+        download_df = pd.concat([download_df, total_row], ignore_index=True)
+        
+        csv = download_df.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📊 Download Summary CSV",
+            data=csv,
+            file_name=f"portfolio_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
 # ============================================================================
 # MAIN APPLICATION
@@ -1193,12 +1199,71 @@ def main():
         # Calculate statistics
         stats = dashboard.analytics.calculate_summary_stats(df_enriched, capital)
         
-        # Render UI
-        dashboard.render_header(stats, fx_rate)
-        dashboard.render_charts(df_enriched)
-        dashboard.render_insights(df_enriched, stats)
-        dashboard.render_holdings_table(df_enriched)
-        dashboard.render_actions()
+        # ═══════════════════════════════════════════════════════════════════
+        # MODE SELECTOR - Let user choose mobile or desktop experience
+        # ═══════════════════════════════════════════════════════════════════
+        st.markdown("### Display Mode")
+        mode = st.radio(
+            "Choose your view",
+            ["📱 Mobile (Simple & Clean)", "💻 Desktop (Full Dashboard)"],
+            horizontal=True,
+            help="Mobile mode: Clean cards, simple lists, fast. Desktop mode: Full charts, tables, analytics."
+        )
+        
+        is_mobile = "Mobile" in mode
+        
+        st.markdown("---")
+        
+        if is_mobile:
+            # ═══════════════════════════════════════════════════════════
+            # MOBILE MODE - Simple, clean, essential info only
+            # ═══════════════════════════════════════════════════════════
+            dashboard.render_header(stats, fx_rate)
+            
+            # Just the essentials
+            dashboard.render_holdings_table(df_enriched, force_mobile=True)
+            dashboard.render_download(df_enriched)
+            
+            # Simple insights
+            st.markdown("---")
+            st.subheader("💡 Quick Insights")
+            
+            equity_df = df_enriched[df_enriched['Ticker'] != 'Cash'].copy()
+            equity_agg = equity_df.groupby('Ticker').agg(
+                MV_AUD=('MV_AUD', 'sum')
+            ).reset_index()
+            
+            top_3_pct = equity_agg.nlargest(3, 'MV_AUD')['MV_AUD'].sum() / stats['equity_value'] * 100 if stats['equity_value'] > 0 else 0
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("💵 Cash", f"${stats['cash_value']:,.0f}", f"{stats['cash_pct']:.1f}%")
+            with col2:
+                st.metric("🎯 Top 3", f"{top_3_pct:.1f}%", "of stocks")
+            
+            if top_3_pct > 60:
+                st.warning("⚠️ High concentration in top 3 positions")
+            elif top_3_pct > 50:
+                st.info("ℹ️ Moderate concentration")
+            else:
+                st.success("✅ Well diversified")
+            
+            # Refresh button
+            st.markdown("---")
+            if st.button("🔄 Refresh Data", use_container_width=True, type="primary"):
+                st.cache_data.clear()
+                st.rerun()
+        
+        else:
+            # ═══════════════════════════════════════════════════════════
+            # DESKTOP MODE - Full dashboard with all features
+            # ═══════════════════════════════════════════════════════════
+            dashboard.render_header(stats, fx_rate)
+            dashboard.render_charts(df_enriched)
+            dashboard.render_insights(df_enriched, stats)
+            dashboard.render_holdings_table(df_enriched, force_mobile=False)
+            dashboard.render_download(df_enriched)
+            dashboard.render_actions()
         
     except Exception as e:
         logger.error(f"Application error: {e}")
