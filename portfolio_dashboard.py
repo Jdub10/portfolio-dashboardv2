@@ -1121,15 +1121,16 @@ class Dashboard:
             st.markdown("👇 **Download below**")
     
     def render_download(self, df: pd.DataFrame):
-        """Render CSV download with complete portfolio details"""
+        """Render CSV download with complete portfolio details in native currencies"""
         st.markdown("---")
         st.subheader("📥 Download Portfolio")
         
-        # Prepare comprehensive download data
+        # Prepare comprehensive download data with native currency preservation
         download_df = df.groupby('Ticker').agg({
             'Shares': 'sum',
-            'Avg_Cost': 'mean',  # Weighted average handled by total cost / total shares
-            'Current_Price': 'mean',
+            'Avg_Cost': 'mean',  # This is already in native currency from input
+            'Current_Price': 'mean',  # This is in native currency
+            'Currency': 'first',  # Preserve currency
             'Cost_AUD': 'sum',
             'MV_AUD': 'sum',
             'PnL_AUD': 'sum',
@@ -1138,43 +1139,69 @@ class Dashboard:
         # Calculate P&L %
         download_df['PnL_%'] = (download_df['PnL_AUD'] / download_df['Cost_AUD'] * 100).fillna(0).round(2)
         
-        # Recalculate true weighted average cost
-        download_df['Avg_Cost'] = (download_df['Cost_AUD'] / download_df['Shares']).round(2)
+        # Recalculate true weighted average cost in NATIVE currency
+        # For aggregated positions, we need to back-calculate from total cost
+        # Avg_Cost * Shares should = Cost in native currency
+        # So Avg_Cost (native) = Cost_AUD / FX_rate / Shares
+        # But simpler: the Avg_Cost from input is already correct in native currency
+        # We just need to ensure it's the weighted average
         
-        # Round numeric columns for cleaner export
+        # Actually, let's properly calculate weighted average from original data
+        # Group and calculate weighted avg cost in native currency
+        native_cost_total = df.groupby('Ticker').apply(
+            lambda x: (x['Shares'] * x['Avg_Cost']).sum()
+        )
+        shares_total = df.groupby('Ticker')['Shares'].sum()
+        download_df['Avg_Cost_Native'] = (native_cost_total / shares_total).round(2)
+        
+        # Round numeric columns
         download_df['MV_AUD'] = download_df['MV_AUD'].round(2)
         download_df['Cost_AUD'] = download_df['Cost_AUD'].round(2)
         download_df['PnL_AUD'] = download_df['PnL_AUD'].round(2)
         download_df['Shares'] = download_df['Shares'].round(4)
         download_df['Current_Price'] = download_df['Current_Price'].round(2)
         
+        # Create display columns with currency labels
+        download_df['Avg_Cost_Display'] = download_df.apply(
+            lambda row: f"{row['Avg_Cost_Native']:.2f} {row['Currency']}" if pd.notna(row['Currency']) else '',
+            axis=1
+        )
+        download_df['Current_Price_Display'] = download_df.apply(
+            lambda row: f"{row['Current_Price']:.2f} {row['Currency']}" if pd.notna(row['Currency']) else '',
+            axis=1
+        )
+        
         # Reorder columns for better readability
         download_df = download_df[[
-            'Ticker', 'Shares', 'Avg_Cost', 'Current_Price',
+            'Ticker', 'Currency', 'Shares', 'Avg_Cost_Display', 'Current_Price_Display',
             'Cost_AUD', 'MV_AUD', 'PnL_AUD', 'PnL_%'
         ]]
         
-        # Sort by market value (Cash will be at top or bottom depending on size)
-        download_df = download_df.sort_values('MV_AUD', ascending=False)
+        # Rename for cleaner CSV headers
+        download_df.columns = [
+            'Ticker', 'Currency', 'Shares', 'Avg Cost', 'Current Price',
+            'Cost (AUD)', 'Market Value (AUD)', 'P&L (AUD)', 'P&L %'
+        ]
+        
+        # Sort by market value
+        download_df = download_df.sort_values('Market Value (AUD)', ascending=False)
         
         # Add totals row
-        total_shares = ''  # N/A for total
-        total_avg_cost = ''  # N/A for total
-        total_current_price = ''  # N/A for total
-        total_cost = download_df['Cost_AUD'].sum().round(2)
-        total_mv = download_df['MV_AUD'].sum().round(2)
-        total_pnl = download_df['PnL_AUD'].sum().round(2)
+        total_cost = download_df['Cost (AUD)'].sum().round(2)
+        total_mv = download_df['Market Value (AUD)'].sum().round(2)
+        total_pnl = download_df['P&L (AUD)'].sum().round(2)
         total_pnl_pct = ((total_pnl / total_cost * 100) if total_cost > 0 else 0).round(2)
         
         total_row = pd.DataFrame({
             'Ticker': ['TOTAL'],
-            'Shares': [total_shares],
-            'Avg_Cost': [total_avg_cost],
-            'Current_Price': [total_current_price],
-            'Cost_AUD': [total_cost],
-            'MV_AUD': [total_mv],
-            'PnL_AUD': [total_pnl],
-            'PnL_%': [total_pnl_pct]
+            'Currency': [''],
+            'Shares': [''],
+            'Avg Cost': [''],
+            'Current Price': [''],
+            'Cost (AUD)': [total_cost],
+            'Market Value (AUD)': [total_mv],
+            'P&L (AUD)': [total_pnl],
+            'P&L %': [total_pnl_pct]
         })
         
         download_df = pd.concat([download_df, total_row], ignore_index=True)
@@ -1188,10 +1215,10 @@ class Dashboard:
             file_name=f"portfolio_complete_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv",
             use_container_width=True,
-            help="Includes all positions (stocks + cash), shares, costs, prices, and totals"
+            help="Avg Cost & Current Price shown in native currency (USD/AUD). All values in AUD."
         )
         
-        st.caption(f"📄 Contains {len(download_df)-1} positions + TOTAL row · All values in AUD · Generated {datetime.now().strftime('%d %b %Y %H:%M')}")
+        st.caption(f"📄 {len(download_df)-1} positions + TOTAL · Prices in native currency · Values in AUD · {datetime.now().strftime('%d %b %Y %H:%M')}")
 
 # ============================================================================
 # MAIN APPLICATION
