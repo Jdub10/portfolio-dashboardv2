@@ -1121,47 +1121,77 @@ class Dashboard:
             st.markdown("👇 **Download below**")
     
     def render_download(self, df: pd.DataFrame):
-        """Render CSV download for mobile and desktop"""
+        """Render CSV download with complete portfolio details"""
         st.markdown("---")
         st.subheader("📥 Download Portfolio")
         
-        # Prepare clean summary for download
-        equity_df = df[df['Ticker'] != 'Cash'].copy()
-        download_df = equity_df.groupby('Ticker').agg({
-            'MV_AUD': 'sum',
-            'Cost_AUD': 'sum',
-            'PnL_AUD': 'sum',
+        # Prepare comprehensive download data
+        download_df = df.groupby('Ticker').agg({
             'Shares': 'sum',
+            'Avg_Cost': 'mean',  # Weighted average handled by total cost / total shares
+            'Current_Price': 'mean',
+            'Cost_AUD': 'sum',
+            'MV_AUD': 'sum',
+            'PnL_AUD': 'sum',
         }).reset_index()
-        download_df['PnL_%'] = (download_df['PnL_AUD'] / download_df['Cost_AUD'] * 100).round(2)
+        
+        # Calculate P&L %
+        download_df['PnL_%'] = (download_df['PnL_AUD'] / download_df['Cost_AUD'] * 100).fillna(0).round(2)
+        
+        # Recalculate true weighted average cost
+        download_df['Avg_Cost'] = (download_df['Cost_AUD'] / download_df['Shares']).round(2)
+        
+        # Round numeric columns for cleaner export
+        download_df['MV_AUD'] = download_df['MV_AUD'].round(2)
+        download_df['Cost_AUD'] = download_df['Cost_AUD'].round(2)
+        download_df['PnL_AUD'] = download_df['PnL_AUD'].round(2)
+        download_df['Shares'] = download_df['Shares'].round(4)
+        download_df['Current_Price'] = download_df['Current_Price'].round(2)
+        
+        # Reorder columns for better readability
+        download_df = download_df[[
+            'Ticker', 'Shares', 'Avg_Cost', 'Current_Price',
+            'Cost_AUD', 'MV_AUD', 'PnL_AUD', 'PnL_%'
+        ]]
+        
+        # Sort by market value (Cash will be at top or bottom depending on size)
         download_df = download_df.sort_values('MV_AUD', ascending=False)
         
-        # Format for readability
-        download_df['MV_AUD'] = download_df['MV_AUD'].round(0)
-        download_df['Cost_AUD'] = download_df['Cost_AUD'].round(0)
-        download_df['PnL_AUD'] = download_df['PnL_AUD'].round(0)
-        download_df['Shares'] = download_df['Shares'].round(2)
-        
         # Add totals row
+        total_shares = ''  # N/A for total
+        total_avg_cost = ''  # N/A for total
+        total_current_price = ''  # N/A for total
+        total_cost = download_df['Cost_AUD'].sum().round(2)
+        total_mv = download_df['MV_AUD'].sum().round(2)
+        total_pnl = download_df['PnL_AUD'].sum().round(2)
+        total_pnl_pct = ((total_pnl / total_cost * 100) if total_cost > 0 else 0).round(2)
+        
         total_row = pd.DataFrame({
             'Ticker': ['TOTAL'],
-            'MV_AUD': [download_df['MV_AUD'].sum()],
-            'Cost_AUD': [download_df['Cost_AUD'].sum()],
-            'PnL_AUD': [download_df['PnL_AUD'].sum()],
-            'Shares': [''],
-            'PnL_%': [(download_df['PnL_AUD'].sum() / download_df['Cost_AUD'].sum() * 100).round(2)]
+            'Shares': [total_shares],
+            'Avg_Cost': [total_avg_cost],
+            'Current_Price': [total_current_price],
+            'Cost_AUD': [total_cost],
+            'MV_AUD': [total_mv],
+            'PnL_AUD': [total_pnl],
+            'PnL_%': [total_pnl_pct]
         })
+        
         download_df = pd.concat([download_df, total_row], ignore_index=True)
         
+        # Convert to CSV
         csv = download_df.to_csv(index=False).encode('utf-8')
         
         st.download_button(
-            label="📊 Download Summary CSV",
+            label="📊 Download Complete Portfolio CSV",
             data=csv,
-            file_name=f"portfolio_{datetime.now().strftime('%Y%m%d')}.csv",
+            file_name=f"portfolio_complete_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv",
-            use_container_width=True
+            use_container_width=True,
+            help="Includes all positions (stocks + cash), shares, costs, prices, and totals"
         )
+        
+        st.caption(f"📄 Contains {len(download_df)-1} positions + TOTAL row · All values in AUD · Generated {datetime.now().strftime('%d %b %Y %H:%M')}")
 
 # ============================================================================
 # MAIN APPLICATION
