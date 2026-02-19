@@ -1125,34 +1125,26 @@ class Dashboard:
         st.markdown("---")
         st.subheader("📥 Download Portfolio")
         
-        # Prepare comprehensive download data with native currency preservation
-        download_df = df.groupby('Ticker').agg({
+        # Calculate native cost total per ticker (Shares × Avg_Cost in native currency)
+        df_with_native = df.copy()
+        df_with_native['Native_Cost_Total'] = df_with_native['Shares'] * df_with_native['Avg_Cost']
+        
+        # Aggregate by ticker
+        download_df = df_with_native.groupby('Ticker').agg({
             'Shares': 'sum',
-            'Avg_Cost': 'mean',  # This is already in native currency from input
-            'Current_Price': 'mean',  # This is in native currency
-            'Currency': 'first',  # Preserve currency
+            'Native_Cost_Total': 'sum',
+            'Current_Price': 'mean',  # Average current price (should be same across platforms)
+            'Currency': 'first',
             'Cost_AUD': 'sum',
             'MV_AUD': 'sum',
             'PnL_AUD': 'sum',
         }).reset_index()
         
+        # Calculate weighted average cost in native currency
+        download_df['Avg_Cost_Native'] = (download_df['Native_Cost_Total'] / download_df['Shares']).round(2)
+        
         # Calculate P&L %
         download_df['PnL_%'] = (download_df['PnL_AUD'] / download_df['Cost_AUD'] * 100).fillna(0).round(2)
-        
-        # Recalculate true weighted average cost in NATIVE currency
-        # For aggregated positions, we need to back-calculate from total cost
-        # Avg_Cost * Shares should = Cost in native currency
-        # So Avg_Cost (native) = Cost_AUD / FX_rate / Shares
-        # But simpler: the Avg_Cost from input is already correct in native currency
-        # We just need to ensure it's the weighted average
-        
-        # Actually, let's properly calculate weighted average from original data
-        # Group and calculate weighted avg cost in native currency
-        native_cost_total = df.groupby('Ticker').apply(
-            lambda x: (x['Shares'] * x['Avg_Cost']).sum()
-        )
-        shares_total = df.groupby('Ticker')['Shares'].sum()
-        download_df['Avg_Cost_Native'] = (native_cost_total / shares_total).round(2)
         
         # Round numeric columns
         download_df['MV_AUD'] = download_df['MV_AUD'].round(2)
@@ -1163,11 +1155,15 @@ class Dashboard:
         
         # Create display columns with currency labels
         download_df['Avg_Cost_Display'] = download_df.apply(
-            lambda row: f"{row['Avg_Cost_Native']:.2f} {row['Currency']}" if pd.notna(row['Currency']) else '',
+            lambda row: f"{row['Avg_Cost_Native']:.2f} {row['Currency']}" 
+                        if pd.notna(row['Avg_Cost_Native']) and pd.notna(row['Currency']) 
+                        else '',
             axis=1
         )
         download_df['Current_Price_Display'] = download_df.apply(
-            lambda row: f"{row['Current_Price']:.2f} {row['Currency']}" if pd.notna(row['Currency']) else '',
+            lambda row: f"{row['Current_Price']:.2f} {row['Currency']}" 
+                        if pd.notna(row['Current_Price']) and pd.notna(row['Currency']) 
+                        else '',
             axis=1
         )
         
@@ -1215,7 +1211,7 @@ class Dashboard:
             file_name=f"portfolio_complete_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv",
             use_container_width=True,
-            help="Avg Cost & Current Price shown in native currency (USD/AUD). All values in AUD."
+            help="Avg Cost & Current Price in native currency (USD/AUD). All dollar values in AUD."
         )
         
         st.caption(f"📄 {len(download_df)-1} positions + TOTAL · Prices in native currency · Values in AUD · {datetime.now().strftime('%d %b %Y %H:%M')}")
