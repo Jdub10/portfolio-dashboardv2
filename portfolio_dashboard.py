@@ -406,6 +406,54 @@ class PortfolioAnalytics:
         agg_df = agg.reset_index()
         agg_df.columns = ['Ticker', 'MV_AUD']
         return agg_df
+    
+    @staticmethod
+    def calculate_strategy_allocation(df: pd.DataFrame, stats: dict) -> dict:
+        """Calculate strategy role allocations vs targets"""
+        equity_df = df[df['Ticker'] != 'Cash'].copy()
+        
+        if 'Strategy_Role' not in equity_df.columns and 'Strategy Role' not in equity_df.columns:
+            return None
+        
+        role_col = 'Strategy_Role' if 'Strategy_Role' in equity_df.columns else 'Strategy Role'
+        target_col = 'Target_Weight' if 'Target_Weight' in equity_df.columns else None
+        
+        # First aggregate by ticker to get unique position targets
+        # (handles duplicate tickers across platforms)
+        ticker_agg = equity_df.groupby(['Ticker', role_col]).agg({
+            'MV_AUD': 'sum',
+            'Target_Weight': 'first' if target_col else lambda x: 0  # Use .first() not .sum()
+        }).reset_index()
+        
+        # Then aggregate by role
+        role_agg = ticker_agg.groupby(role_col).agg({
+            'MV_AUD': 'sum',
+            'Target_Weight': 'sum'  # Now safe to sum since tickers are unique
+        }).reset_index()
+        
+        equity_value = stats['equity_value'] if stats['equity_value'] > 0 else 1
+        
+        # Calculate current % and target %
+        role_agg['Current_%'] = (role_agg['MV_AUD'] / equity_value * 100).round(1)
+        role_agg['Target_%'] = (role_agg['Target_Weight'] * 100).round(1) if target_col else 0
+        role_agg['Gap_%'] = (role_agg['Current_%'] - role_agg['Target_%']).round(1)
+        
+        # Define role colors and order
+        role_colors = {
+            'Core': '#2E4053',      # Dark blue
+            'Growth': '#1a9655',    # Green
+            'Tactical': '#F5B041',  # Yellow/Gold
+        }
+        
+        role_order = ['Core', 'Growth', 'Tactical']
+        
+        return {
+            'data': role_agg,
+            'colors': role_colors,
+            'order': role_order,
+            'equity_value': equity_value
+        }
+
 
 # ============================================================================
 # VISUALIZATION
@@ -1027,6 +1075,75 @@ class Dashboard:
         st.progress(div_score / 100)
         st.caption("Score based on how evenly spread your equity positions are. 100 = perfectly equal weight.")
     
+    def render_strategy_analysis(self, df: pd.DataFrame, stats: dict):
+        """Render strategy role allocation vs targets"""
+        strategy_data = self.analytics.calculate_strategy_allocation(df, stats)
+        
+        if not strategy_data:
+            return  # No strategy role column in data
+        
+        st.markdown("---")
+        st.subheader("🎯 Strategy Allocation")
+        
+        role_df = strategy_data['data']
+        colors = strategy_data['colors']
+        
+        # Style constants for inline cards
+        CARD_BASE = "background:#f8f9fa;border:2px solid {border};border-radius:12px;padding:14px 16px;margin:8px 0;"
+        ROLE_NAME = "font-size:0.85rem;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;"
+        METRIC_ROW = "display:flex;justify-content:space-between;align-items:center;margin:4px 0;"
+        LABEL = "font-size:0.78rem;color:#666;font-weight:600;"
+        VALUE = "font-size:1.05rem;font-weight:700;color:#1a1a1a;"
+        GAP_POS = "font-size:0.85rem;font-weight:600;color:#1a9655;"
+        GAP_NEG = "font-size:0.85rem;font-weight:600;color:#dc3545;"
+        
+        # Render each role as a card
+        for role in strategy_data['order']:
+            role_row = role_df[role_df.iloc[:, 0] == role]
+            
+            if role_row.empty:
+                continue
+            
+            current_pct = role_row['Current_%'].values[0]
+            target_pct = role_row['Target_%'].values[0]
+            gap_pct = role_row['Gap_%'].values[0]
+            mv_aud = role_row['MV_AUD'].values[0]
+            
+            border_color = colors.get(role, '#e0e0e0')
+            role_color = colors.get(role, '#666')
+            
+            gap_style = GAP_POS if gap_pct >= 0 else GAP_NEG
+            gap_arrow = "▲" if gap_pct >= 0 else "▼"
+            gap_text = f"{gap_arrow} {abs(gap_pct):.1f}% gap"
+            
+            card_html = (
+                f'<div style="{CARD_BASE.format(border=border_color)}">'
+                f'  <div style="{ROLE_NAME.format(color=role_color)}">{role}</div>'
+                f'  <div style="{METRIC_ROW}">'
+                f'    <span style="{LABEL}">Current</span>'
+                f'    <span style="{VALUE}">{current_pct:.1f}%</span>'
+                f'  </div>'
+                f'  <div style="{METRIC_ROW}">'
+                f'    <span style="{LABEL}">Target</span>'
+                f'    <span style="{VALUE}">{target_pct:.1f}%</span>'
+                f'  </div>'
+                f'  <div style="{METRIC_ROW}">'
+                f'    <span style="{LABEL}">Gap</span>'
+                f'    <span style="{gap_style}">{gap_text}</span>'
+                f'  </div>'
+                f'  <div style="margin-top:8px;padding-top:8px;border-top:1px solid #e0e0e0;">'
+                f'    <span style="{LABEL}">Value:</span> '
+                f'    <span style="font-size:0.9rem;font-weight:600;color:#1a1a1a;">${mv_aud:,.0f}</span>'
+                f'  </div>'
+                f'</div>'
+            )
+            
+            st.markdown(card_html, unsafe_allow_html=True)
+        
+        # Summary at bottom
+        total_target = role_df['Target_%'].sum()
+        st.caption(f"💡 Total target allocation: {total_target:.1f}% · Unallocated: {100 - total_target:.1f}%")
+    
     def _prepare_summary_view(self, df: pd.DataFrame) -> pd.DataFrame:
         """Aggregate holdings by ticker"""
         df['Native_Cost_Total'] = df['Shares'] * df['Avg_Cost']
@@ -1273,6 +1390,9 @@ def main():
             # ═══════════════════════════════════════════════════════════
             dashboard.render_header(stats, fx_rate)
             
+            # Strategy allocation (simplified for mobile)
+            dashboard.render_strategy_analysis(df_enriched, stats)
+            
             # Just the essentials
             dashboard.render_holdings_table(df_enriched, force_mobile=True)
             dashboard.render_download(df_enriched)
@@ -1313,6 +1433,7 @@ def main():
             # ═══════════════════════════════════════════════════════════
             dashboard.render_header(stats, fx_rate)
             dashboard.render_charts(df_enriched)
+            dashboard.render_strategy_analysis(df_enriched, stats)
             dashboard.render_insights(df_enriched, stats)
             dashboard.render_holdings_table(df_enriched, force_mobile=False)
             dashboard.render_download(df_enriched)
