@@ -431,10 +431,11 @@ class PortfolioAnalytics:
             'Target_Weight': 'sum'  # Now safe to sum since tickers are unique
         }).reset_index()
         
-        equity_value = stats['equity_value'] if stats['equity_value'] > 0 else 1
+        # CRITICAL FIX: Use TOTAL portfolio value (including cash), not just equity
+        total_portfolio_value = stats['total_mv'] if stats['total_mv'] > 0 else 1
         
-        # Calculate current % and target %
-        role_agg['Current_%'] = (role_agg['MV_AUD'] / equity_value * 100).round(1)
+        # Calculate current % and target % as % of TOTAL PORTFOLIO
+        role_agg['Current_%'] = (role_agg['MV_AUD'] / total_portfolio_value * 100).round(1)
         role_agg['Target_%'] = (role_agg['Target_Weight'] * 100).round(1) if target_col else 0
         role_agg['Gap_%'] = (role_agg['Current_%'] - role_agg['Target_%']).round(1)
         
@@ -451,7 +452,7 @@ class PortfolioAnalytics:
             'data': role_agg,
             'colors': role_colors,
             'order': role_order,
-            'equity_value': equity_value
+            'total_portfolio_value': total_portfolio_value
         }
 
 
@@ -1087,6 +1088,7 @@ class Dashboard:
         
         role_df = strategy_data['data']
         colors = strategy_data['colors']
+        total_portfolio = strategy_data['total_portfolio_value']
         
         # Style constants for inline cards
         CARD_BASE = "background:#f8f9fa;border:2px solid {border};border-radius:12px;padding:14px 16px;margin:8px 0;"
@@ -1140,9 +1142,44 @@ class Dashboard:
             
             st.markdown(card_html, unsafe_allow_html=True)
         
+        # Add Cash bucket
+        cash_value = stats['cash_value']
+        cash_pct = stats['cash_pct']
+        cash_target = 10.0  # Assume 10% cash target - user can adjust
+        cash_gap = cash_pct - cash_target
+        
+        cash_gap_style = GAP_POS if cash_gap >= 0 else GAP_NEG
+        cash_arrow = "▲" if cash_gap >= 0 else "▼"
+        cash_gap_text = f"{cash_arrow} {abs(cash_gap):.1f}% gap"
+        
+        cash_card = (
+            f'<div style="{CARD_BASE.format(border="#95a5a6")}">'
+            f'  <div style="{ROLE_NAME.format(color="#7f8c8d")}">💵 CASH</div>'
+            f'  <div style="{METRIC_ROW}">'
+            f'    <span style="{LABEL}">Current</span>'
+            f'    <span style="{VALUE}">{cash_pct:.1f}%</span>'
+            f'  </div>'
+            f'  <div style="{METRIC_ROW}">'
+            f'    <span style="{LABEL}">Target</span>'
+            f'    <span style="{VALUE}">{cash_target:.1f}%</span>'
+            f'  </div>'
+            f'  <div style="{METRIC_ROW}">'
+            f'    <span style="{LABEL}">Gap</span>'
+            f'    <span style="{cash_gap_style}">{cash_gap_text}</span>'
+            f'  </div>'
+            f'  <div style="margin-top:8px;padding-top:8px;border-top:1px solid #e0e0e0;">'
+            f'    <span style="{LABEL}">Value:</span> '
+            f'    <span style="font-size:0.9rem;font-weight:600;color:#1a1a1a;">${cash_value:,.0f}</span>'
+            f'  </div>'
+            f'</div>'
+        )
+        
+        st.markdown(cash_card, unsafe_allow_html=True)
+        
         # Summary at bottom
-        total_target = role_df['Target_%'].sum()
-        st.caption(f"💡 Total target allocation: {total_target:.1f}% · Unallocated: {100 - total_target:.1f}%")
+        total_stock_target = role_df['Target_%'].sum()
+        total_allocated = role_df['Current_%'].sum() + cash_pct
+        st.caption(f"💡 Total stock targets: {total_stock_target:.1f}% · Cash target: {cash_target:.1f}% · Total portfolio: {total_allocated:.1f}%")
     
     def _prepare_summary_view(self, df: pd.DataFrame) -> pd.DataFrame:
         """Aggregate holdings by ticker"""
