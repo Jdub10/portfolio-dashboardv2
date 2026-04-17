@@ -1180,6 +1180,80 @@ class Dashboard:
         total_stock_target = role_df['Target_%'].sum()
         total_allocated = role_df['Current_%'].sum() + cash_pct
         st.caption(f"💡 Total stock targets: {total_stock_target:.1f}% · Cash target: {cash_target:.1f}% · Total portfolio: {total_allocated:.1f}%")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # POSITION-LEVEL ALLOCATION DETAILS
+        # ═══════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown("#### 📋 Position Allocation Details")
+        st.caption("Current vs Target weight for each position · Dollar gaps show how much to buy (+) or sell (−)")
+        
+        # Build position-level breakdown
+        equity_df = df[df['Ticker'] != 'Cash'].copy()
+        
+        if 'Target_Weight' in equity_df.columns:
+            # Aggregate by ticker
+            pos_agg = equity_df.groupby('Ticker').agg({
+                'MV_AUD': 'sum',
+                'Target_Weight': 'first',
+                role_col: 'first'
+            }).reset_index()
+            
+            # Calculate percentages of total portfolio
+            pos_agg['Current_%'] = (pos_agg['MV_AUD'] / total_portfolio * 100).round(2)
+            pos_agg['Target_%'] = (pos_agg['Target_Weight'] * 100).round(2)
+            pos_agg['Gap_%'] = (pos_agg['Current_%'] - pos_agg['Target_%']).round(2)
+            pos_agg['Gap_$'] = (pos_agg['Gap_%'] / 100 * total_portfolio).round(0)
+            
+            # Sort by absolute gap (biggest misallocations first)
+            pos_agg['Abs_Gap'] = pos_agg['Gap_$'].abs()
+            pos_agg = pos_agg.sort_values('Abs_Gap', ascending=False)
+            
+            # Format for display
+            display_df = pos_agg[['Ticker', role_col, 'Current_%', 'Target_%', 'Gap_%', 'Gap_$']].copy()
+            display_df.columns = ['Stock', 'Role', 'Current %', 'Target %', 'Gap %', 'Gap $']
+            
+            # Add action indicators
+            display_df['Action'] = display_df['Gap $'].apply(
+                lambda x: '🟢 BUY' if x < -1000 else ('🔴 SELL' if x > 1000 else '✅ OK')
+            )
+            
+            # Reorder columns
+            display_df = display_df[['Stock', 'Role', 'Current %', 'Target %', 'Gap %', 'Gap $', 'Action']]
+            
+            # Display the table
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    'Stock': st.column_config.TextColumn('Stock', width='small'),
+                    'Role': st.column_config.TextColumn('Role', width='small'),
+                    'Current %': st.column_config.NumberColumn('Current %', format='%.2f%%'),
+                    'Target %': st.column_config.NumberColumn('Target %', format='%.2f%%'),
+                    'Gap %': st.column_config.NumberColumn('Gap %', format='%+.2f%%'),
+                    'Gap $': st.column_config.NumberColumn('Gap $', format='$%,.0f'),
+                    'Action': st.column_config.TextColumn('Action', width='small'),
+                }
+            )
+            
+            # Summary stats
+            total_buy = display_df[display_df['Gap $'] < 0]['Gap $'].sum()
+            total_sell = display_df[display_df['Gap $'] > 0]['Gap $'].sum()
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("💰 Need to Deploy", f"${abs(total_buy):,.0f}", 
+                         help="Total amount to buy across all underweight positions")
+            with col2:
+                st.metric("💸 Need to Trim", f"${total_sell:,.0f}",
+                         help="Total amount to sell from overweight positions")
+            with col3:
+                net_rebalance = total_sell + total_buy
+                st.metric("⚖️ Net Rebalance", f"${net_rebalance:,.0f}",
+                         help="Net cash flow after all rebalancing (should be ~$0)")
+        else:
+            st.info("💡 Add a 'Target_Weight' column to your Google Sheet to see position-level targets")
     
     def _prepare_summary_view(self, df: pd.DataFrame) -> pd.DataFrame:
         """Aggregate holdings by ticker"""
