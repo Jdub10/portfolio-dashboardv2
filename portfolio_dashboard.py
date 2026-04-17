@@ -1191,10 +1191,7 @@ class Dashboard:
         # Build position-level breakdown
         equity_df = df[df['Ticker'] != 'Cash'].copy()
         
-        # Determine role column name
-        role_col = 'Strategy_Role' if 'Strategy_Role' in equity_df.columns else 'Strategy Role'
-        
-        if 'Target_Weight' in equity_df.columns and role_col in equity_df.columns:
+        if 'Target_Weight' in equity_df.columns:
             # Aggregate by ticker
             pos_agg = equity_df.groupby('Ticker').agg({
                 'MV_AUD': 'sum',
