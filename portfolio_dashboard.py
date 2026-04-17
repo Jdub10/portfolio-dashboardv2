@@ -1111,12 +1111,26 @@ class Dashboard:
             gap_pct = role_row['Gap_%'].values[0]
             mv_aud = role_row['MV_AUD'].values[0]
             
+            # Calculate deployment amount (negative gap = need to buy)
+            deploy_amount = (gap_pct / 100 * total_portfolio)
+            
             border_color = colors.get(role, '#e0e0e0')
             role_color = colors.get(role, '#666')
             
             gap_style = GAP_POS if gap_pct >= 0 else GAP_NEG
             gap_arrow = "▲" if gap_pct >= 0 else "▼"
             gap_text = f"{gap_arrow} {abs(gap_pct):.1f}% gap"
+            
+            # Deployment message
+            if deploy_amount < -1000:
+                deploy_msg = f"💰 Deploy ${abs(deploy_amount):,.0f}"
+                deploy_style = "color:#1a9655;font-weight:700;font-size:0.9rem;margin-top:6px;"
+            elif deploy_amount > 1000:
+                deploy_msg = f"💸 Trim ${deploy_amount:,.0f}"
+                deploy_style = "color:#dc3545;font-weight:700;font-size:0.9rem;margin-top:6px;"
+            else:
+                deploy_msg = "✅ On Target"
+                deploy_style = "color:#28a745;font-weight:600;font-size:0.9rem;margin-top:6px;"
             
             card_html = (
                 f'<div style="{CARD_BASE.format(border=border_color)}">'
@@ -1137,6 +1151,7 @@ class Dashboard:
                 f'    <span style="{LABEL}">Value:</span> '
                 f'    <span style="font-size:0.9rem;font-weight:600;color:#1a1a1a;">${mv_aud:,.0f}</span>'
                 f'  </div>'
+                f'  <div style="{deploy_style}">{deploy_msg}</div>'
                 f'</div>'
             )
             
@@ -1148,9 +1163,23 @@ class Dashboard:
         cash_target = 10.0  # Assume 10% cash target - user can adjust
         cash_gap = cash_pct - cash_target
         
+        # Calculate cash deployment (negative = deploy from cash, positive = add to cash)
+        cash_deploy = (cash_gap / 100 * total_portfolio)
+        
         cash_gap_style = GAP_POS if cash_gap >= 0 else GAP_NEG
         cash_arrow = "▲" if cash_gap >= 0 else "▼"
         cash_gap_text = f"{cash_arrow} {abs(cash_gap):.1f}% gap"
+        
+        # Cash deployment message (inverted logic - high cash means deploy FROM cash)
+        if cash_deploy > 1000:
+            cash_deploy_msg = f"💰 Available to Deploy: ${cash_deploy:,.0f}"
+            cash_deploy_style = "color:#1a9655;font-weight:700;font-size:0.9rem;margin-top:6px;"
+        elif cash_deploy < -1000:
+            cash_deploy_msg = f"⚠️ Need to Raise Cash: ${abs(cash_deploy):,.0f}"
+            cash_deploy_style = "color:#dc3545;font-weight:700;font-size:0.9rem;margin-top:6px;"
+        else:
+            cash_deploy_msg = "✅ Cash Level OK"
+            cash_deploy_style = "color:#28a745;font-weight:600;font-size:0.9rem;margin-top:6px;"
         
         cash_card = (
             f'<div style="{CARD_BASE.format(border="#95a5a6")}">'
@@ -1171,6 +1200,7 @@ class Dashboard:
             f'    <span style="{LABEL}">Value:</span> '
             f'    <span style="font-size:0.9rem;font-weight:600;color:#1a1a1a;">${cash_value:,.0f}</span>'
             f'  </div>'
+            f'  <div style="{cash_deploy_style}">{cash_deploy_msg}</div>'
             f'</div>'
         )
         
