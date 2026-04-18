@@ -1090,6 +1090,14 @@ class Dashboard:
         colors = strategy_data['colors']
         total_portfolio = strategy_data['total_portfolio_value']
         
+        # STRATEGIC TARGETS (your overall allocation strategy)
+        strategic_targets = {
+            'Core': 55.0,      # 55% of total portfolio
+            'Growth': 25.0,    # 25% of total portfolio
+            'Tactical': 10.0,  # 10% of total portfolio
+            'Cash': 10.0       # 10% of total portfolio
+        }
+        
         # Style constants for inline cards
         CARD_BASE = "background:#f8f9fa;border:2px solid {border};border-radius:12px;padding:14px 16px;margin:8px 0;"
         ROLE_NAME = "font-size:0.85rem;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;"
@@ -1098,6 +1106,7 @@ class Dashboard:
         VALUE = "font-size:1.05rem;font-weight:700;color:#1a1a1a;"
         GAP_POS = "font-size:0.85rem;font-weight:600;color:#1a9655;"
         GAP_NEG = "font-size:0.85rem;font-weight:600;color:#dc3545;"
+        UNALLOC = "font-size:0.8rem;font-weight:600;color:#6c757d;margin-top:4px;"
         
         # Render each role as a card
         for role in strategy_data['order']:
@@ -1107,8 +1116,15 @@ class Dashboard:
                 continue
             
             current_pct = role_row['Current_%'].values[0]
-            target_pct = role_row['Target_%'].values[0]
-            gap_pct = role_row['Gap_%'].values[0]
+            position_target_pct = role_row['Target_%'].values[0]  # Sum of individual position targets
+            strategic_target_pct = strategic_targets.get(role, 0)  # Overall bucket target
+            
+            # Calculate unallocated space (dry powder for this category)
+            unallocated_pct = strategic_target_pct - position_target_pct
+            unallocated_cash = (unallocated_pct / 100 * total_portfolio)
+            
+            # Gap vs strategic target
+            gap_pct = current_pct - strategic_target_pct
             mv_aud = role_row['MV_AUD'].values[0]
             
             # Calculate deployment amount (negative gap = need to buy)
@@ -1132,6 +1148,12 @@ class Dashboard:
                 deploy_msg = "✅ On Target"
                 deploy_style = "color:#28a745;font-weight:600;font-size:0.9rem;margin-top:6px;"
             
+            # Unallocated message
+            if unallocated_cash > 1000:
+                unalloc_msg = f"🎯 Unallocated: {unallocated_pct:.1f}% (${abs(unallocated_cash):,.0f} dry powder)"
+            else:
+                unalloc_msg = ""
+            
             card_html = (
                 f'<div style="{CARD_BASE.format(border=border_color)}">'
                 f'  <div style="{ROLE_NAME.format(color=role_color)}">{role}</div>'
@@ -1140,8 +1162,8 @@ class Dashboard:
                 f'    <span style="{VALUE}">{current_pct:.1f}%</span>'
                 f'  </div>'
                 f'  <div style="{METRIC_ROW}">'
-                f'    <span style="{LABEL}">Target</span>'
-                f'    <span style="{VALUE}">{target_pct:.1f}%</span>'
+                f'    <span style="{LABEL}">Strategic Target</span>'
+                f'    <span style="{VALUE}">{strategic_target_pct:.1f}%</span>'
                 f'  </div>'
                 f'  <div style="{METRIC_ROW}">'
                 f'    <span style="{LABEL}">Gap</span>'
@@ -1152,15 +1174,19 @@ class Dashboard:
                 f'    <span style="font-size:0.9rem;font-weight:600;color:#1a1a1a;">${mv_aud:,.0f}</span>'
                 f'  </div>'
                 f'  <div style="{deploy_style}">{deploy_msg}</div>'
-                f'</div>'
             )
+            
+            if unalloc_msg:
+                card_html += f'  <div style="{UNALLOC}">{unalloc_msg}</div>'
+            
+            card_html += '</div>'
             
             st.markdown(card_html, unsafe_allow_html=True)
         
         # Add Cash bucket
         cash_value = stats['cash_value']
         cash_pct = stats['cash_pct']
-        cash_target = 10.0  # Assume 10% cash target - user can adjust
+        cash_target = strategic_targets['Cash']  # Use strategic target
         cash_gap = cash_pct - cash_target
         
         # Calculate cash deployment (negative = deploy from cash, positive = add to cash)
@@ -1207,9 +1233,12 @@ class Dashboard:
         st.markdown(cash_card, unsafe_allow_html=True)
         
         # Summary at bottom
-        total_stock_target = role_df['Target_%'].sum()
+        position_target_sum = role_df['Target_%'].sum()
+        strategic_target_sum = sum(strategic_targets.values())
         total_allocated = role_df['Current_%'].sum() + cash_pct
-        st.caption(f"💡 Total stock targets: {total_stock_target:.1f}% · Cash target: {cash_target:.1f}% · Total portfolio: {total_allocated:.1f}%")
+        
+        st.caption(f"💡 Strategic targets: Core {strategic_targets['Core']:.0f}% · Growth {strategic_targets['Growth']:.0f}% · Tactical {strategic_targets['Tactical']:.0f}% · Cash {strategic_targets['Cash']:.0f}% = {strategic_target_sum:.0f}%")
+        st.caption(f"📊 Position targets defined: {position_target_sum:.1f}% · Unallocated space: {strategic_target_sum - position_target_sum - strategic_targets['Cash']:.1f}%")
         
         # ═══════════════════════════════════════════════════════════════
         # POSITION-LEVEL ALLOCATION DETAILS
