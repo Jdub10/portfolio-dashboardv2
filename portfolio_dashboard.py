@@ -264,12 +264,22 @@ class DataManager:
         try:
             # Get unique tickers
             tickers = df[df['Ticker'] != 'Cash']['Ticker'].unique().tolist()
-            tickers.append("AUDUSD=X")
+            
+            # Get unique currencies (excluding AUD which is the base)
+            currencies = df['Currency'].dropna().unique().tolist()
+            fx_tickers = []
+            for curr in currencies:
+                if curr and curr != 'AUD':
+                    # Yahoo Finance FX format: AUD{CURR}=X means 1 AUD = X {CURR}
+                    fx_tickers.append(f"AUD{curr}=X")
+            
+            # Combine all tickers to fetch
+            all_tickers = tickers + fx_tickers
             
             # Fetch prices
             with st.spinner('📡 Syncing market data...'):
                 data = yf.download(
-                    tickers, 
+                    all_tickers, 
                     period=config.YF_PERIOD, 
                     progress=False
                 )['Close']
@@ -279,35 +289,49 @@ class DataManager:
                 
                 latest_prices = data.ffill().iloc[-1]
             
-            # Extract FX rate
-            fx_rate = latest_prices.get('AUDUSD=X', config.DEFAULT_FX_RATE)
-            if pd.isna(fx_rate) or fx_rate == 0:
-                logger.warning("Invalid FX rate, using default")
-                fx_rate = config.DEFAULT_FX_RATE
+            # Build FX rate dictionary: {currency: rate where 1 AUD = rate * currency}
+            fx_rates = {'AUD': 1.0}
+            for curr in currencies:
+                if curr and curr != 'AUD':
+                    rate = latest_prices.get(f"AUD{curr}=X", None)
+                    if pd.notna(rate) and rate > 0:
+                        fx_rates[curr] = rate
+                    else:
+                        # Fallback defaults
+                        fallback_rates = {
+                            'USD': 0.66,
+                            'JPY': 99.0,
+                            'SEK': 6.85,
+                            'EUR': 0.61,
+                            'GBP': 0.52
+                        }
+                        fx_rates[curr] = fallback_rates.get(curr, 1.0)
+                        logger.warning(f"Using fallback FX rate for {curr}: {fx_rates[curr]}")
+            
+            # Main FX rate for display (AUD/USD)
+            fx_rate = fx_rates.get('USD', config.DEFAULT_FX_RATE)
             
             # Map prices to portfolio
             df['Current_Price'] = df['Ticker'].map(latest_prices).fillna(df['Avg_Cost'])
             df.loc[df['Ticker'] == 'Cash', 'Current_Price'] = 1.0
             
-            # Calculate valuations in AUD
-            df['MV_AUD'] = df.apply(
-                lambda r: (r['Current_Price'] * r['Shares']) / fx_rate 
-                if r.get('Currency') == 'USD' 
-                else r['Current_Price'] * r['Shares'],
-                axis=1
-            )
+            # Calculate valuations in AUD using proper FX conversion
+            # Formula: AUD_value = native_value / fx_rate (where fx_rate is AUD/CURRENCY)
+            def to_aud(row, value_col):
+                native_value = row[value_col] * row['Shares']
+                curr = row.get('Currency', 'AUD')
+                if pd.isna(curr) or curr == 'AUD':
+                    return native_value
+                rate = fx_rates.get(curr, 1.0)
+                return native_value / rate if rate > 0 else native_value
             
-            df['Cost_AUD'] = df.apply(
-                lambda r: (r['Avg_Cost'] * r['Shares']) / fx_rate 
-                if r.get('Currency') == 'USD' 
-                else r['Avg_Cost'] * r['Shares'],
-                axis=1
-            )
+            df['MV_AUD'] = df.apply(lambda r: to_aud(r, 'Current_Price'), axis=1)
+            df['Cost_AUD'] = df.apply(lambda r: to_aud(r, 'Avg_Cost'), axis=1)
             
             df['PnL_AUD'] = df['MV_AUD'] - df['Cost_AUD']
             df['PnL_Pct'] = (df['PnL_AUD'] / df['Cost_AUD'] * 100).fillna(0)
             
-            logger.info(f"Market data fetched successfully (FX: {fx_rate:.4f})")
+            logger.info(f"Market data fetched (FX rates: {fx_rates})")
             return df, fx_rate
             
         except Exception as e:
