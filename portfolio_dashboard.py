@@ -1,19 +1,24 @@
 """
-Strategic Portfolio Dashboard
-A modern, production-ready portfolio tracking application
+Portfolio Command Center v3
+============================
+Single source of truth architecture:
+- ALL weights flow through Engine.weights() with an explicit denominator
+- ALL current-vs-target comparisons flow through Engine.current_vs_target()
+- Global toggle: Total Portfolio View (incl. cash) vs Invested Only View
 """
 
-import streamlit as st
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
+from typing import Tuple, Optional
+
+import numpy as np
 import pandas as pd
-import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
-from typing import Tuple, Optional
-from dataclasses import dataclass
-from datetime import datetime
-import logging
+import streamlit as st
+import yfinance as yf
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -23,92 +28,85 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DashboardConfig:
-    """Centralized configuration management"""
     SHEET_URL: str = "https://docs.google.com/spreadsheets/d/14IGIMj9iR5qOtmYT1e6FgN8t2tdQ5M1R_-hS6rw1RQs/export?format=csv"
-    DEFAULT_FX_RATE: float = 0.70
-    CACHE_TTL: int = 60  # 1 minute - keeps data fresh
+    DEFAULT_FX_RATE: float = 0.66
+    CACHE_TTL: int = 30
     YF_PERIOD: str = "5d"
-    PIE_THRESHOLD: float = 0.85
-    
-    # Color schemes
-    COLORS_PRIMARY: list = None
-    COLORS_ACCENT: list = None
-    
-    def __post_init__(self):
-        self.COLORS_PRIMARY = ['#2E4053', '#5D6D7E', '#85929E', '#AED6F1', 
-                               '#F5B041', '#EC7063', '#48C9B0', '#AF7AC5']
-        self.COLORS_ACCENT = ['#1ABC9C', '#3498DB', '#9B59B6', '#E74C3C']
+
+    # Strategic bucket targets (% of TOTAL portfolio incl. cash)
+    STRATEGIC_TARGETS: dict = field(default_factory=lambda: {
+        'Core': 55.0,
+        'Growth': 25.0,
+        'Tactical': 10.0,
+        'Cash': 10.0,
+    })
+
+    # Names treated as high-beta for risk reporting
+    HIGH_BETA: tuple = ('IBIT', 'TSLA', 'PLTR', 'ALAB', 'MU', 'VICR', 'STRC',
+                        'SIVE.ST', 'VIVO', 'NET', 'VPG', 'SNDK', 'UUUU')
+
+    ROLE_COLORS: dict = field(default_factory=lambda: {
+        'Core': '#2E4053',
+        'Growth': '#1a9655',
+        'Tactical': '#F5B041',
+        'Cash': '#95a5a6',
+    })
+
+    PALETTE: tuple = ('#2E4053', '#1a9655', '#F5B041', '#5DADE2', '#AF7AC5',
+                      '#E59866', '#48C9B0', '#EC7063', '#A6ACAF', '#F7DC6F')
 
 config = DashboardConfig()
 
 # ============================================================================
-# PAGE SETUP
+# PAGE SETUP / CSS
 # ============================================================================
 
 def setup_page():
-    """Configure page settings and custom CSS"""
     st.set_page_config(
         page_title="Portfolio Command Center",
         layout="wide",
         page_icon="📊",
-        initial_sidebar_state="collapsed"
+        initial_sidebar_state="collapsed",
     )
-
     st.markdown("""
-    <script>
-    // Store viewport width in session storage for Python to read
-    const width = window.innerWidth;
-    const isMobile = width < 768;
-    window.parent.postMessage({type: 'streamlit:setComponentValue', value: {mobile: isMobile}}, '*');
-    </script>
     <style>
-        /* ── Base ── */
         html, body, .stApp, [data-testid="stAppViewContainer"],
         [data-testid="stHeader"], .main, section.main > div {
             background-color: #ffffff !important;
         }
-
-        /* ── Typography ── */
-        h1, h2, h3, h4, h5, h6,
-        p, span, div, label, li, td, th, caption {
+        h1, h2, h3, h4, h5, h6, p, span, div, label, li, td, th, caption {
             color: #1a1a1a !important;
             text-shadow: none !important;
-            background-color: transparent !important;
         }
-        h1 { font-size: 1.6rem !important; font-weight: 700 !important; letter-spacing: -0.5px !important; }
-        h2 { font-size: 1.25rem !important; font-weight: 600 !important; }
-        h3 { font-size: 1.1rem  !important; font-weight: 600 !important; }
+        h1 { font-size: 1.55rem !important; font-weight: 700 !important; letter-spacing: -0.5px !important; }
+        h2 { font-size: 1.2rem  !important; font-weight: 600 !important; }
+        h3 { font-size: 1.05rem !important; font-weight: 600 !important; }
 
-        /* ── Metric cards ── */
         [data-testid="stMetric"] {
             background-color: #f8f9fa !important;
             border: 1px solid #e0e0e0 !important;
             border-radius: 12px !important;
-            padding: 0.9rem 1rem !important;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.07) !important;
+            padding: 0.8rem 0.9rem !important;
         }
         [data-testid="stMetric"] * { color: #1a1a1a !important; }
-        [data-testid="stMetricLabel"]  { font-size: 0.78rem !important; font-weight: 600 !important; color: #555 !important; }
-        [data-testid="stMetricValue"]  { font-size: 1.3rem  !important; font-weight: 700 !important; }
-        [data-testid="stMetricDelta"]  { font-size: 0.8rem  !important; font-weight: 500 !important; }
+        [data-testid="stMetricLabel"] { font-size: 0.74rem !important; font-weight: 600 !important; color: #555 !important; }
+        [data-testid="stMetricValue"] { font-size: 1.22rem !important; font-weight: 700 !important; }
+        [data-testid="stMetricDelta"] { font-size: 0.78rem !important; }
 
-        /* ── Buttons ── */
-        .stButton > button {
+        .stButton > button, .stDownloadButton > button {
             background-color: #ffffff !important;
             color: #1a1a1a !important;
             border: 2px solid #dee2e6 !important;
             border-radius: 10px !important;
             font-weight: 600 !important;
-            min-height: 44px !important;
-            width: 100% !important;
+            min-height: 42px !important;
         }
-        .stButton > button:hover {
+        .stButton > button:hover, .stDownloadButton > button:hover {
             background-color: #2E4053 !important;
             color: #ffffff !important;
             border-color: #2E4053 !important;
         }
 
-        /* ── Tabs ── */
         .stTabs [data-baseweb="tab-list"] {
             background-color: #f8f9fa !important;
             border-radius: 10px !important;
@@ -117,12 +115,10 @@ def setup_page():
         }
         .stTabs [data-baseweb="tab"] {
             color: #555 !important;
-            background-color: transparent !important;
             border-radius: 8px !important;
-            font-size: 0.82rem !important;
+            font-size: 0.85rem !important;
             font-weight: 600 !important;
-            padding: 6px 10px !important;
-            min-height: 36px !important;
+            padding: 6px 12px !important;
         }
         .stTabs [aria-selected="true"] {
             color: #1a1a1a !important;
@@ -130,1507 +126,802 @@ def setup_page():
             box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
         }
 
-        /* ── Radio ── */
         .stRadio label { color: #1a1a1a !important; font-weight: 500 !important; }
-
-        /* ── Alerts ── */
         [data-testid="stAlert"] { border-radius: 10px !important; }
-        [data-testid="stAlert"] * { color: #1a1a1a !important; }
-
-        /* ── Tables ── */
-        [data-testid="stDataFrame"] { border-radius: 10px !important; overflow: hidden !important; }
-        .dataframe, .dataframe * { color: #1a1a1a !important; }
-        .dataframe thead tr th {
-            background-color: #f8f9fa !important;
-            font-weight: 700 !important;
-            font-size: 0.8rem !important;
-        }
-        .dataframe tbody tr td { background-color: #ffffff !important; font-size: 0.82rem !important; }
-
-        /* ── Progress ── */
+        [data-testid="stDataFrame"] { border-radius: 10px !important; }
         [data-testid="stProgressBar"] > div { background-color: #2E4053 !important; }
-
-        /* ── Hide chrome ── */
         footer, #MainMenu, header { visibility: hidden !important; }
-        [data-testid="stToolbar"]  { display: none !important; }
-
-        /* ── Mobile-specific hiding ── */
-        @media (max-width: 768px) {
-            .hide-on-mobile { display: none !important; }
-        }
+        [data-testid="stToolbar"] { display: none !important; }
     </style>
     """, unsafe_allow_html=True)
-
-# ============================================================================
-# AUTHENTICATION
-# ============================================================================
-
-class AuthManager:
-    """Secure authentication handler"""
-    
-    @staticmethod
-    def check_password() -> bool:
-        """
-        Verify user password against stored secret
-        Returns: True if authenticated, False otherwise
-        """
-        def password_entered():
-            try:
-                if st.session_state["password"] == st.secrets.get("PASSWORD", ""):
-                    st.session_state["password_correct"] = True
-                    del st.session_state["password"]
-                else:
-                    st.session_state["password_correct"] = False
-                    st.error("❌ Invalid access code")
-            except Exception as e:
-                logger.error(f"Authentication error: {e}")
-                st.session_state["password_correct"] = False
-        
-        if "password_correct" not in st.session_state:
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                st.markdown("### 🔐 Portfolio Access")
-                st.text_input(
-                    "Enter Access Code", 
-                    type="password", 
-                    on_change=password_entered, 
-                    key="password",
-                    placeholder="Access code required"
-                )
-                st.caption("Contact administrator for access")
-            return False
-        
-        return st.session_state["password_correct"]
 
 # ============================================================================
 # DATA LAYER
 # ============================================================================
 
 class DataManager:
-    """Handles all data operations with error handling"""
-    
+
     @staticmethod
     @st.cache_data(ttl=config.CACHE_TTL, show_spinner=False)
     def load_portfolio_data() -> pd.DataFrame:
-        """
-        Load and validate portfolio data from Google Sheets
-        Returns: Cleaned DataFrame
-        Raises: ValueError if data validation fails
-        """
         try:
             df = pd.read_csv(config.SHEET_URL)
             df.columns = df.columns.str.strip()
-            
-            # Data validation
-            required_cols = ['Ticker', 'Shares', 'Avg_Cost']
-            missing = [col for col in required_cols if col not in df.columns]
+            # Normalise column names
+            df = df.rename(columns={'Strategy Role': 'Strategy_Role'})
+
+            required = ['Ticker', 'Shares', 'Avg_Cost']
+            missing = [c for c in required if c not in df.columns]
             if missing:
                 raise ValueError(f"Missing required columns: {missing}")
-            
-            # Clean numeric columns
-            numeric_cols = ['Shares', 'Avg_Cost', 'Stop_Loss_Price']
-            for col in numeric_cols:
+
+            for col in ['Shares', 'Avg_Cost', 'Stop_Price', 'Stop_Loss_Price']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(
-                        df[col].astype(str).str.replace(',', ''), 
-                        errors='coerce'
-                    ).fillna(0)
-            
-            # Handle target weights
+                        df[col].astype(str).str.replace(',', ''), errors='coerce'
+                    )
+            df['Shares'] = df['Shares'].fillna(0)
+            df['Avg_Cost'] = df['Avg_Cost'].fillna(0)
+
             if 'Target_Weight' in df.columns:
                 df['Target_Weight'] = pd.to_numeric(
-                    df['Target_Weight'].astype(str).str.replace('%', ''), 
-                    errors='coerce'
+                    df['Target_Weight'].astype(str).str.replace('%', ''), errors='coerce'
                 )
                 df.loc[df['Target_Weight'] > 1.0, 'Target_Weight'] /= 100
-            
-            logger.info(f"Successfully loaded {len(df)} portfolio entries")
+
+            # Strip whitespace on text columns
+            for col in ['Ticker', 'Platform', 'Currency', 'Strategy_Role', 'Sector', 'Name']:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip().replace({'nan': None, '': None})
+
+            df = df[df['Ticker'].notna()]
+            logger.info(f"Loaded {len(df)} rows")
             return df
-            
         except Exception as e:
             logger.error(f"Data loading error: {e}")
-            st.error(f"⚠️ Failed to load portfolio data: {str(e)}")
+            st.error(f"⚠️ Failed to load portfolio data: {e}")
             return pd.DataFrame()
-    
+
     @staticmethod
-    def fetch_market_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, float]:
-        """
-        Fetch live market prices and calculate valuations
-        Args:
-            df: Portfolio DataFrame
-        Returns:
-            Tuple of (enhanced DataFrame, FX rate)
-        """
+    def fetch_market_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, float, dict]:
+        """Fetch prices (incl. extended hours) and convert to AUD.
+        Returns (df, aud_usd_rate, fx_rates)."""
+        fx_rates = {'AUD': 1.0}
         try:
-            # Get unique tickers
             tickers = df[df['Ticker'] != 'Cash']['Ticker'].unique().tolist()
-            
-            # Get unique currencies (excluding AUD which is the base)
-            currencies = df['Currency'].dropna().unique().tolist()
-            fx_tickers = []
-            for curr in currencies:
-                if curr and curr != 'AUD':
-                    # Yahoo Finance FX format: AUD{CURR}=X means 1 AUD = X {CURR}
-                    fx_tickers.append(f"AUD{curr}=X")
-            
-            # Combine all tickers to fetch
+            currencies = [c for c in df['Currency'].dropna().unique().tolist() if c and c != 'AUD']
+            fx_tickers = [f"AUD{c}=X" for c in currencies]
             all_tickers = tickers + fx_tickers
-            
-            # Fetch prices
-            with st.spinner('📡 Syncing market data...'):
-                data = yf.download(
-                    all_tickers, 
-                    period=config.YF_PERIOD, 
-                    progress=False
-                )['Close']
-                
+
+            with st.spinner('📡 Syncing market data…'):
+                data = yf.download(all_tickers, period=config.YF_PERIOD,
+                                   progress=False, prepost=True)['Close']
                 if data.empty:
                     raise ValueError("No market data received")
-                
-                latest_prices = data.ffill().iloc[-1]
-            
-            # Build FX rate dictionary: {currency: rate where 1 AUD = rate * currency}
-            fx_rates = {'AUD': 1.0}
-            for curr in currencies:
-                if curr and curr != 'AUD':
-                    rate = latest_prices.get(f"AUD{curr}=X", None)
-                    if pd.notna(rate) and rate > 0:
-                        fx_rates[curr] = rate
-                    else:
-                        # Fallback defaults
-                        fallback_rates = {
-                            'USD': 0.66,
-                            'JPY': 99.0,
-                            'SEK': 6.85,
-                            'EUR': 0.61,
-                            'GBP': 0.52
-                        }
-                        fx_rates[curr] = fallback_rates.get(curr, 1.0)
-                        logger.warning(f"Using fallback FX rate for {curr}: {fx_rates[curr]}")
-            
-            # Main FX rate for display (AUD/USD)
-            fx_rate = fx_rates.get('USD', config.DEFAULT_FX_RATE)
-            
-            # Map prices to portfolio
-            df['Current_Price'] = df['Ticker'].map(latest_prices).fillna(df['Avg_Cost'])
+                if isinstance(data, pd.Series):
+                    data = data.to_frame()
+                latest = data.ffill().iloc[-1]
+
+            fallback = {'USD': 0.66, 'JPY': 99.0, 'SEK': 6.85, 'EUR': 0.61, 'GBP': 0.52}
+            for c in currencies:
+                rate = latest.get(f"AUD{c}=X", np.nan)
+                if pd.notna(rate) and rate > 0:
+                    fx_rates[c] = float(rate)
+                else:
+                    fx_rates[c] = fallback.get(c, 1.0)
+                    logger.warning(f"Fallback FX for {c}: {fx_rates[c]}")
+
+            df = df.copy()
+            df['Current_Price'] = df['Ticker'].map(latest)
+            df['Price_Missing'] = df['Current_Price'].isna() & (df['Ticker'] != 'Cash')
+            df['Current_Price'] = df['Current_Price'].fillna(df['Avg_Cost'])
             df.loc[df['Ticker'] == 'Cash', 'Current_Price'] = 1.0
-            
-            # Calculate valuations in AUD using proper FX conversion
-            # Formula: AUD_value = native_value / fx_rate (where fx_rate is AUD/CURRENCY)
-            def to_aud(row, value_col):
-                native_value = row[value_col] * row['Shares']
-                curr = row.get('Currency', 'AUD')
-                if pd.isna(curr) or curr == 'AUD':
-                    return native_value
+            df.loc[df['Ticker'] == 'Cash', 'Price_Missing'] = False
+
+            def to_aud(row, col):
+                native = row[col] * row['Shares']
+                curr = row.get('Currency') or 'AUD'
                 rate = fx_rates.get(curr, 1.0)
-                return native_value / rate if rate > 0 else native_value
-            
+                return native / rate if rate > 0 else native
+
             df['MV_AUD'] = df.apply(lambda r: to_aud(r, 'Current_Price'), axis=1)
             df['Cost_AUD'] = df.apply(lambda r: to_aud(r, 'Avg_Cost'), axis=1)
-            
             df['PnL_AUD'] = df['MV_AUD'] - df['Cost_AUD']
-            df['PnL_Pct'] = (df['PnL_AUD'] / df['Cost_AUD'] * 100).fillna(0)
-            
-            logger.info(f"Market data fetched (FX rates: {fx_rates})")
-            return df, fx_rate
-            
+
+            return df, fx_rates.get('USD', config.DEFAULT_FX_RATE), fx_rates
+
         except Exception as e:
-            logger.error(f"Market data fetch error: {e}")
-            st.warning(f"⚠️ Using cached prices: {str(e)}")
-            # Return original df with FX default
-            return df, config.DEFAULT_FX_RATE
+            logger.error(f"Market data error: {e}")
+            st.warning(f"⚠️ Using cost basis as prices: {e}")
+            df = df.copy()
+            df['Current_Price'] = df['Avg_Cost']
+            df['Price_Missing'] = df['Ticker'] != 'Cash'
+            df['MV_AUD'] = df['Avg_Cost'] * df['Shares']
+            df['Cost_AUD'] = df['MV_AUD']
+            df['PnL_AUD'] = 0.0
+            return df, config.DEFAULT_FX_RATE, fx_rates
 
 # ============================================================================
-# ANALYTICS
+# CANONICAL CALCULATION ENGINE  —  single source of truth
 # ============================================================================
 
-class PortfolioAnalytics:
-    """Portfolio analysis and calculations"""
-    
+class Engine:
+    """Every allocation number on every page comes from these functions."""
+
     @staticmethod
-    def calculate_summary_stats(df: pd.DataFrame, capital: float) -> dict:
-        """Calculate portfolio-level statistics"""
-        total_mv = df['MV_AUD'].sum()
-        total_cost = df['Cost_AUD'].sum()
-        
-        # Total P&L = Current Market Value - Capital Injected
-        total_pnl = total_mv - capital
-        pnl_pct = (total_pnl / capital * 100) if capital > 0 else 0
-        
-        # Stock performance P&L (for reference)
-        stock_pnl = total_mv - total_cost
-        stock_pnl_pct = (stock_pnl / total_cost * 100) if total_cost > 0 else 0
-        
-        cash_value = df[df['Ticker'] == 'Cash']['MV_AUD'].sum()
-        equity_value = total_mv - cash_value
-        
-        # Count unique tickers excluding Cash
-        unique_positions = len(df[df['Ticker'] != 'Cash']['Ticker'].unique())
-        
-        # Winner/Loser analysis
-        winners = df[(df['PnL_AUD'] > 0) & (df['Ticker'] != 'Cash')]
-        losers = df[(df['PnL_AUD'] < 0) & (df['Ticker'] != 'Cash')]
-        
-        return {
-            'total_mv': total_mv,
-            'total_cost': total_cost,
-            'capital_injected': capital,
-            'total_pnl': total_pnl,  # This is MV - Capital Injected
-            'pnl_pct': pnl_pct,
-            'stock_pnl': stock_pnl,  # This is performance-based P&L
-            'stock_pnl_pct': stock_pnl_pct,
-            'num_positions': unique_positions,  # Fixed: count unique tickers only
-            'cash_value': cash_value,
-            'cash_pct': (cash_value / total_mv * 100) if total_mv > 0 else 0,
-            'equity_value': equity_value,
-            'equity_pct': (equity_value / total_mv * 100) if total_mv > 0 else 0,
-            'num_winners': len(winners['Ticker'].unique()),  # Count unique winners
-            'num_losers': len(losers['Ticker'].unique()),  # Count unique losers
-            'winners_value': winners.groupby('Ticker')['PnL_AUD'].sum().sum() if not winners.empty else 0,
-            'losers_value': losers.groupby('Ticker')['PnL_AUD'].sum().sum() if not losers.empty else 0,
-            'best_performer': winners.groupby('Ticker')['PnL_Pct'].mean().idxmax() if not winners.empty else 'N/A',
-            'best_performer_pct': winners.groupby('Ticker')['PnL_Pct'].mean().max() if not winners.empty else 0,
-            'worst_performer': losers.groupby('Ticker')['PnL_Pct'].mean().idxmin() if not losers.empty else 'N/A',
-            'worst_performer_pct': losers.groupby('Ticker')['PnL_Pct'].mean().min() if not losers.empty else 0,
-        }
-    
+    def derive_region(row) -> str:
+        t, c = str(row.get('Ticker', '')), row.get('Currency') or 'AUD'
+        if t.endswith('.AX') or c == 'AUD':
+            return 'Australia'
+        if t.endswith('.T') or c == 'JPY':
+            return 'Japan'
+        if t.endswith('.ST') or c == 'SEK':
+            return 'Sweden'
+        if c == 'EUR':
+            return 'Europe'
+        if c == 'GBP':
+            return 'UK'
+        return 'United States'
+
     @staticmethod
-    def prepare_pie_data(df: pd.DataFrame, threshold: float = None) -> pd.DataFrame:
-        """
-        Aggregate small positions into 'Others' category
-        Args:
-            df: Portfolio DataFrame
-            threshold: Cumulative percentage threshold for grouping
-        Returns:
-            Cleaned DataFrame for pie charts
-        """
-        threshold = threshold or config.PIE_THRESHOLD
-        
-        agg = df.groupby('Ticker')['MV_AUD'].sum().sort_values(ascending=False)
-        total = agg.sum()
-        
-        if total == 0:
-            return pd.DataFrame({'Ticker': [], 'MV_AUD': []})
-        
-        cumsum = agg.cumsum() / total
-        
-        main = agg[cumsum <= threshold]
-        others = agg[cumsum > threshold]
-        
-        if not others.empty and len(others) > 1:
-            other_label = f"Others ({len(others)} positions)"
-            result = pd.concat([
-                main,
-                pd.Series([others.sum()], index=[other_label])
-            ])
-            result_df = result.reset_index()
-            result_df.columns = ['Ticker', 'MV_AUD']
-            return result_df
-        
-        agg_df = agg.reset_index()
-        agg_df.columns = ['Ticker', 'MV_AUD']
-        return agg_df
-    
-    @staticmethod
-    def calculate_strategy_allocation(df: pd.DataFrame, stats: dict) -> dict:
-        """Calculate strategy role allocations vs targets"""
-        equity_df = df[df['Ticker'] != 'Cash'].copy()
-        
-        if 'Strategy_Role' not in equity_df.columns and 'Strategy Role' not in equity_df.columns:
-            return None
-        
-        role_col = 'Strategy_Role' if 'Strategy_Role' in equity_df.columns else 'Strategy Role'
-        target_col = 'Target_Weight' if 'Target_Weight' in equity_df.columns else None
-        
-        # First aggregate by ticker to get unique position targets
-        # (handles duplicate tickers across platforms)
-        ticker_agg = equity_df.groupby(['Ticker', role_col]).agg({
-            'MV_AUD': 'sum',
-            'Target_Weight': 'first' if target_col else lambda x: 0  # Use .first() not .sum()
-        }).reset_index()
-        
-        # Then aggregate by role
-        role_agg = ticker_agg.groupby(role_col).agg({
-            'MV_AUD': 'sum',
-            'Target_Weight': 'sum'  # Now safe to sum since tickers are unique
-        }).reset_index()
-        
-        # CRITICAL FIX: Use TOTAL portfolio value (including cash), not just equity
-        total_portfolio_value = stats['total_mv'] if stats['total_mv'] > 0 else 1
-        
-        # Calculate current % and target % as % of TOTAL PORTFOLIO
-        role_agg['Current_%'] = (role_agg['MV_AUD'] / total_portfolio_value * 100).round(1)
-        role_agg['Target_%'] = (role_agg['Target_Weight'] * 100).round(1) if target_col else 0
-        role_agg['Gap_%'] = (role_agg['Current_%'] - role_agg['Target_%']).round(1)
-        
-        # Define role colors and order
-        role_colors = {
-            'Core': '#2E4053',      # Dark blue
-            'Growth': '#1a9655',    # Green
-            'Tactical': '#F5B041',  # Yellow/Gold
-        }
-        
-        role_order = ['Core', 'Growth', 'Tactical']
-        
-        return {
-            'data': role_agg,
-            'colors': role_colors,
-            'order': role_order,
-            'total_portfolio_value': total_portfolio_value
-        }
+    def aggregate(df: pd.DataFrame) -> pd.DataFrame:
+        """Collapse platform-level rows into one row per ticker.
+        Target_Weight uses FIRST (same target duplicated across platforms)."""
+        eq = df[df['Ticker'] != 'Cash'].copy()
+        if eq.empty:
+            return pd.DataFrame()
 
+        for col in ['Strategy_Role', 'Sector', 'Currency', 'Platform', 'Name']:
+            if col not in eq.columns:
+                eq[col] = None
+        if 'Target_Weight' not in eq.columns:
+            eq['Target_Weight'] = np.nan
+        stop_col = 'Stop_Price' if 'Stop_Price' in eq.columns else (
+            'Stop_Loss_Price' if 'Stop_Loss_Price' in eq.columns else None)
+        eq['_Stop'] = eq[stop_col] if stop_col else np.nan
+        eq['_NativeCost'] = eq['Shares'] * eq['Avg_Cost']
+        eq['_PriceMissing'] = eq.get('Price_Missing', False)
 
-# ============================================================================
-# VISUALIZATION
-# ============================================================================
-
-class ChartBuilder:
-    """Modern chart creation with consistent styling"""
-    
-    @staticmethod
-    def create_pie_chart(
-        data: pd.DataFrame, 
-        title: str,
-        colors: list = None
-    ) -> go.Figure:
-        """Create a modern donut chart"""
-        colors = colors or config.COLORS_PRIMARY
-        
-        fig = px.pie(
-            data,
-            values='MV_AUD',
-            names='Ticker',
-            hole=0.5,
-            color_discrete_sequence=colors
-        )
-        
-        fig.update_layout(
-            margin=dict(t=40, b=20, l=0, r=0),
-            height=400,
-            showlegend=True,
-            legend=dict(
-                orientation="v",
-                yanchor="middle",
-                y=0.5,
-                xanchor="left",
-                x=1.05,
-                font=dict(size=11)
-            ),
-            title=dict(
-                text=title,
-                x=0.5,
-                xanchor='center',
-                font=dict(size=16, color='#2E4053')
-            )
-        )
-        
-        fig.update_traces(
-            textinfo='label+percent',
-            textposition='inside',
-            textfont_size=11,
-            marker=dict(line=dict(color='rgba(0,0,0,0)', width=0))
-        )
-        
-        return fig
-    
-    @staticmethod
-    def create_allocation_bar(data: pd.DataFrame) -> go.Figure:
-        """Create horizontal allocation bar chart"""
-        top_10 = data.nlargest(10, 'MV_AUD')
-        
-        fig = px.bar(
-            top_10,
-            x='MV_AUD',
-            y='Ticker',
-            orientation='h',
-            color='PnL_AUD',
-            color_continuous_scale=['#EC7063', '#F5F5F5', '#48C9B0'],
-            text='MV_AUD'
-        )
-        
-        fig.update_layout(
-            height=400,
-            margin=dict(t=20, b=20, l=0, r=0),
-            xaxis_title="Market Value (AUD)",
-            yaxis_title="",
-            coloraxis_showscale=False
-        )
-        
-        fig.update_traces(
-            texttemplate='$%{text:,.0f}',
-            textposition='outside'
-        )
-        
-        return fig
-    
-    @staticmethod
-    def create_sector_chart(df: pd.DataFrame) -> go.Figure:
-        """Create sector allocation pie chart"""
-        if 'Sector' not in df.columns:
-            return None
-        
-        sector_data = df[df['Ticker'] != 'Cash'].groupby('Sector')['MV_AUD'].sum().sort_values(ascending=False)
-        
-        if sector_data.empty:
-            return None
-        
-        sector_df = sector_data.reset_index()
-        sector_df.columns = ['Sector', 'MV_AUD']
-        
-        fig = px.pie(
-            sector_df,
-            values='MV_AUD',
-            names='Sector',
-            hole=0.5,
-            color_discrete_sequence=config.COLORS_PRIMARY
-        )
-        
-        fig.update_layout(
-            margin=dict(t=40, b=20, l=0, r=0),
-            height=400,
-            showlegend=True,
-            legend=dict(
-                orientation="v",
-                yanchor="middle",
-                y=0.5,
-                xanchor="left",
-                x=1.05,
-                font=dict(size=11)
-            ),
-            title=dict(
-                text="Sector Allocation",
-                x=0.5,
-                xanchor='center',
-                font=dict(size=16, color='#2E4053')
-            )
-        )
-        
-        fig.update_traces(
-            textinfo='label+percent',
-            textposition='inside',
-            textfont_size=11,
-            marker=dict(line=dict(color='rgba(0,0,0,0)', width=0))
-        )
-        
-        return fig
-    
-    @staticmethod
-    def create_strategy_chart(df: pd.DataFrame) -> go.Figure:
-        """Create strategy role allocation pie chart"""
-        if 'Strategy_Role' not in df.columns and 'Strategy Role' not in df.columns:
-            return None
-        
-        strategy_col = 'Strategy_Role' if 'Strategy_Role' in df.columns else 'Strategy Role'
-        strategy_data = df[df['Ticker'] != 'Cash'].groupby(strategy_col)['MV_AUD'].sum().sort_values(ascending=False)
-        
-        if strategy_data.empty:
-            return None
-        
-        strategy_df = strategy_data.reset_index()
-        strategy_df.columns = ['Strategy', 'MV_AUD']
-        
-        fig = px.pie(
-            strategy_df,
-            values='MV_AUD',
-            names='Strategy',
-            hole=0.5,
-            color_discrete_sequence=config.COLORS_PRIMARY
-        )
-        
-        fig.update_layout(
-            margin=dict(t=40, b=20, l=0, r=0),
-            height=400,
-            showlegend=True,
-            legend=dict(
-                orientation="v",
-                yanchor="middle",
-                y=0.5,
-                xanchor="left",
-                x=1.05,
-                font=dict(size=11)
-            ),
-            title=dict(
-                text="Strategy Allocation",
-                x=0.5,
-                xanchor='center',
-                font=dict(size=16, color='#2E4053')
-            )
-        )
-        
-        fig.update_traces(
-            textinfo='label+percent',
-            textposition='inside',
-            textfont_size=11,
-            marker=dict(line=dict(color='rgba(0,0,0,0)', width=0))
-        )
-        
-        return fig
-    
-    @staticmethod
-    def create_performance_chart(df: pd.DataFrame) -> go.Figure:
-        """Create top winners vs losers chart"""
-        equity_df = df[df['Ticker'] != 'Cash'].copy()
-        
-        if equity_df.empty:
-            return None
-        
-        # Get top 5 winners and losers
-        winners = equity_df.nlargest(5, 'PnL_AUD')[['Ticker', 'PnL_AUD', 'PnL_Pct']]
-        losers = equity_df.nsmallest(5, 'PnL_AUD')[['Ticker', 'PnL_AUD', 'PnL_Pct']]
-        
-        combined = pd.concat([winners, losers]).sort_values('PnL_AUD')
-        
-        colors = ['#EC7063' if x < 0 else '#48C9B0' for x in combined['PnL_AUD']]
-        
-        fig = go.Figure(data=[
-            go.Bar(
-                x=combined['PnL_AUD'],
-                y=combined['Ticker'],
-                orientation='h',
-                marker_color=colors,
-                text=combined['PnL_Pct'],
-                texttemplate='%{text:.1f}%',
-                textposition='outside',
-                hovertemplate='<b>%{y}</b><br>P&L: $%{x:,.0f}<br>Return: %{text:.1f}%<extra></extra>'
-            )
-        ])
-        
-        fig.update_layout(
-            title=dict(
-                text="Top Performers",
-                x=0.5,
-                xanchor='center',
-                font=dict(size=16, color='#2E4053')
-            ),
-            xaxis_title="P&L (AUD)",
-            yaxis_title="",
-            height=400,
-            margin=dict(t=40, b=20, l=0, r=20),
-            showlegend=False
-        )
-        
-        return fig
-
-# ============================================================================
-# UI COMPONENTS
-# ============================================================================
-
-class Dashboard:
-    """Main dashboard UI orchestration"""
-    
-    def __init__(self):
-        self.data_manager = DataManager()
-        self.analytics = PortfolioAnalytics()
-        self.charts = ChartBuilder()
-    
-    def render_header(self, stats: dict, fx_rate: float):
-        """Render dashboard header with responsive metric cards"""
-
-        CARD = (
-            "background:#f8f9fa;border:1px solid #e0e0e0;border-radius:12px;"
-            "padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);"
-        )
-        LABEL = (
-            "font-size:0.72rem;font-weight:600;color:#666;"
-            "text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;"
-        )
-        VALUE = "font-size:1.15rem;font-weight:700;color:#1a1a1a;line-height:1.2;"
-        D_UP  = "font-size:0.78rem;font-weight:600;color:#1a9655;margin-top:3px;"
-        D_DN  = "font-size:0.78rem;font-weight:600;color:#dc3545;margin-top:3px;"
-        D_NEU = "font-size:0.78rem;font-weight:600;color:#555;margin-top:3px;"
-
-        GRID = (
-            "display:grid;grid-template-columns:1fr 1fr;"
-            "gap:10px;margin-bottom:10px;"
-        )
-
-        def _card(label, value, delta="", delta_dir="neu"):
-            d_style = {"up": D_UP, "down": D_DN, "neu": D_NEU}.get(delta_dir, D_NEU)
-            arrow   = "▲ " if delta_dir == "up" else ("▼ " if delta_dir == "down" else "")
-            d_html  = f'<div style="{d_style}">{arrow}{delta}</div>' if delta else ""
-            return (
-                f'<div style="{CARD}">'
-                f'<div style="{LABEL}">{label}</div>'
-                f'<div style="{VALUE}">{value}</div>'
-                f'{d_html}'
-                f'</div>'
-            )
-
-        pnl_dir  = "up"   if stats['total_pnl'] >= 0 else "down"
-        spnl_dir = "up"   if stats['stock_pnl'] >= 0 else "down"
-
-        st.title("📊 Portfolio Command Center")
-        st.caption(f"Updated: {datetime.now().strftime('%d %b %Y  %H:%M')}")
-
-        # ── Row 1 ──────────────────────────────────────────────────────────
-        st.markdown(
-            f'<div style="{GRID}">'
-            + _card("Total Value",      f"${stats['total_mv']:,.0f}")
-            + _card("Total P&L",        f"${stats['total_pnl']:,.0f}",
-                    f"{stats['pnl_pct']:.2f}%", pnl_dir)
-            + _card("Capital Injected", f"${stats['capital_injected']:,.0f}")
-            + _card("Stock Positions",  str(stats['num_positions']),
-                    f"${stats['cash_value']:,.0f} cash", "neu")
-            + '</div>',
-            unsafe_allow_html=True
-        )
-
-        # ── Row 2 ──────────────────────────────────────────────────────────
-        st.markdown(
-            f'<div style="{GRID}">'
-            + _card("Stock Performance", f"${stats['stock_pnl']:,.0f}",
-                    f"{stats['stock_pnl_pct']:.2f}%", spnl_dir)
-            + _card("AUD / USD",         f"{fx_rate:.4f}")
-            + _card("Best Performer",    stats['best_performer'],
-                    f"+{stats['best_performer_pct']:.1f}%", "up")
-            + _card("Worst Performer",   stats['worst_performer'],
-                    f"{stats['worst_performer_pct']:.1f}%", "down")
-            + '</div>'
-            + '<hr style="border:none;border-top:1px solid #e9ecef;margin:16px 0;">',
-            unsafe_allow_html=True
-        )
-    
-    def render_charts(self, df: pd.DataFrame):
-        """Render portfolio visualization charts"""
-        st.markdown("---")
-        st.subheader("📈 Portfolio Analysis")
-        
-        # Create tabs for different views
-        tab1, tab2, tab3 = st.tabs(["💼 Allocation", "🎯 Strategy & Sectors", "🏆 Performance"])
-        
-        with tab1:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # All assets including cash
-                pie_data_all = self.analytics.prepare_pie_data(df)
-                fig1 = self.charts.create_pie_chart(
-                    pie_data_all,
-                    "Asset Allocation (All)"
-                )
-                st.plotly_chart(fig1, use_container_width=True)
-            
-            with col2:
-                # Equities only
-                df_equity = df[df['Ticker'] != 'Cash']
-                pie_data_equity = self.analytics.prepare_pie_data(df_equity)
-                fig2 = self.charts.create_pie_chart(
-                    pie_data_equity,
-                    "Equity Distribution"
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-        
-        with tab2:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Sector allocation
-                sector_fig = self.charts.create_sector_chart(df)
-                if sector_fig:
-                    st.plotly_chart(sector_fig, use_container_width=True)
-                else:
-                    st.info("📊 Sector data not available. Add a 'Sector' column to your spreadsheet.")
-            
-            with col2:
-                # Strategy allocation
-                strategy_fig = self.charts.create_strategy_chart(df)
-                if strategy_fig:
-                    st.plotly_chart(strategy_fig, use_container_width=True)
-                else:
-                    st.info("🎯 Strategy data not available. Add a 'Strategy_Role' column to your spreadsheet.")
-        
-        with tab3:
-            # Top performers chart
-            perf_fig = self.charts.create_performance_chart(df)
-            if perf_fig:
-                st.plotly_chart(perf_fig, use_container_width=True)
-            else:
-                st.info("No performance data available")
-            
-            # Additional performance metrics
-            st.markdown("### 📊 Performance Breakdown")
-            col1, col2, col3 = st.columns(3)
-            
-            equity_df = df[df['Ticker'] != 'Cash']
-            
-            with col1:
-                avg_return = equity_df['PnL_Pct'].mean() if not equity_df.empty else 0
-                st.metric("Avg Return", f"{avg_return:.2f}%")
-            
-            with col2:
-                median_return = equity_df['PnL_Pct'].median() if not equity_df.empty else 0
-                st.metric("Median Return", f"{median_return:.2f}%")
-            
-            with col3:
-                win_rate = (len(equity_df[equity_df['PnL_AUD'] > 0]) / len(equity_df) * 100) if not equity_df.empty else 0
-                st.metric("Win Rate", f"{win_rate:.1f}%")
-    
-    def render_holdings_table(self, df: pd.DataFrame, force_mobile: bool = False):
-        """Render holdings - auto-adapts to mobile or desktop mode"""
-        st.markdown("---")
-        st.subheader("📋 Holdings")
-
-        if force_mobile:
-            # ═══════════════════════════════════════════════════════════════
-            # MOBILE MODE - Clean HTML card list (no choice, just show it)
-            # ═══════════════════════════════════════════════════════════════
-            equity_df = df[df['Ticker'] != 'Cash'].copy()
-            mob = equity_df.groupby('Ticker').agg(
-                MV_AUD  =('MV_AUD',  'sum'),
-                Cost_AUD=('Cost_AUD','sum'),
-                PnL_AUD =('PnL_AUD', 'sum'),
-            ).reset_index()
-            mob['PnL_%'] = (mob['PnL_AUD'] / mob['Cost_AUD'] * 100).fillna(0)
-            mob = mob.sort_values('MV_AUD', ascending=False)
-
-            total_mv   = mob['MV_AUD'].sum()
-            total_cost = mob['Cost_AUD'].sum()
-            total_pnl  = mob['PnL_AUD'].sum()
-            total_pct  = (total_pnl / total_cost * 100) if total_cost else 0
-
-            # Inline styles
-            ROW_BASE   = "display:flex;justify-content:space-between;align-items:center;padding:11px 15px;border-bottom:1px solid #f0f0f0;"
-            ROW_TOTAL  = ROW_BASE + "background:#f8f9fa;font-weight:700;border-top:2px solid #2E4053;"
-            WRAP       = "background:#fff;border:1px solid #e0e0e0;border-radius:12px;margin:12px 0;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);"
-            HDR        = "display:flex;justify-content:space-between;padding:11px 15px;background:linear-gradient(135deg,#2E4053 0%,#34495e 100%);color:#fff;"
-            HDR_T      = "color:#fff !important;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;"
-            TICKER_S   = "font-weight:700;font-size:1.05rem;color:#1a1a1a;min-width:70px;"
-            MV_S       = "font-size:1rem;font-weight:700;color:#1a1a1a;margin-bottom:4px;"
-            PNL_UP     = "font-size:0.88rem;font-weight:600;color:#1a9655;margin-bottom:3px;"
-            PNL_DN     = "font-size:0.88rem;font-weight:600;color:#dc3545;margin-bottom:3px;"
-            COST_S     = "font-size:0.78rem;color:#888;"
-
-            rows_html = ""
-            for _, r in mob.iterrows():
-                pnl_style = PNL_UP if r['PnL_AUD'] >= 0 else PNL_DN
-                arrow     = "▲" if r['PnL_AUD'] >= 0 else "▼"
-                rows_html += (
-                    f'<div style="{ROW_BASE}">'
-                    f'  <div style="{TICKER_S}">{r["Ticker"]}</div>'
-                    f'  <div style="flex:1;text-align:right;">'
-                    f'    <div style="{MV_S}">${r["MV_AUD"]:,.0f}</div>'
-                    f'    <div style="{pnl_style}">{arrow} {r["PnL_%"]:+.1f}% (${r["PnL_AUD"]:,.0f})</div>'
-                    f'    <div style="{COST_S}">Cost: ${r["Cost_AUD"]:,.0f}</div>'
-                    f'  </div>'
-                    f'</div>'
-                )
-
-            total_pnl_style = PNL_UP if total_pnl >= 0 else PNL_DN
-            total_arrow     = "▲" if total_pnl >= 0 else "▼"
-
-            html = (
-                f'<div style="{WRAP}">'
-                f'  <div style="{HDR}">'
-                f'    <span style="{HDR_T}">Stock</span>'
-                f'    <span style="{HDR_T}">Value · P&L · Cost</span>'
-                f'  </div>'
-                + rows_html +
-                f'  <div style="{ROW_TOTAL}">'
-                f'    <div style="font-size:1.05rem;font-weight:700;">TOTAL</div>'
-                f'    <div style="flex:1;text-align:right;">'
-                f'      <div style="{MV_S}">${total_mv:,.0f}</div>'
-                f'      <div style="{total_pnl_style}">{total_arrow} {total_pct:+.1f}% (${total_pnl:,.0f})</div>'
-                f'      <div style="{COST_S}">Cost: ${total_cost:,.0f}</div>'
-                f'    </div>'
-                f'  </div>'
-                f'</div>'
-            )
-
-            st.markdown(html, unsafe_allow_html=True)
-
-        else:
-            # ═══════════════════════════════════════════════════════════════
-            # DESKTOP MODE - Full styled dataframe with options
-            # ═══════════════════════════════════════════════════════════════
-            view_choice = st.radio(
-                "Table Style",
-                ["Summary", "Detailed"],
-                horizontal=True,
-                label_visibility="collapsed"
-            )
-
-            df_display = (
-                self._prepare_summary_view(df) if view_choice == "Summary"
-                else self._prepare_detailed_view(df)
-            )
-
-            # Column order
-            if view_choice == "Summary":
-                col_order = ['Ticker','MV_AUD','PnL_%','PnL_AUD','Cost_AUD','Shares','Current_Price','Avg_Cost']
-            else:
-                col_order = ['Ticker','Platform','MV_AUD','PnL_%','PnL_AUD','Cost_AUD','Shares','Current_Price','Avg_Cost']
-
-            available  = [c for c in col_order if c in df_display.columns]
-            df_display = df_display[available]
-
-            st.dataframe(
-                df_display.style
-                    .format(self._get_format_dict(view_choice), na_rep="—")
-                    .apply(self._highlight_totals, axis=1)
-                    .apply(self._color_pnl, subset=['PnL_AUD'] if 'PnL_AUD' in df_display.columns else [], axis=0)
-                    .apply(self._color_pnl, subset=['PnL_%']   if 'PnL_%'   in df_display.columns else [], axis=0),
-                use_container_width=True,
-                height=520,
-                column_config={
-                    "Ticker":        st.column_config.TextColumn("Stock",    width="small"),
-                    "Platform":      st.column_config.TextColumn("Platform", width="small"),
-                    "MV_AUD":        st.column_config.TextColumn("Mkt Val",  width="medium"),
-                    "PnL_%":         st.column_config.TextColumn("P&L %",   width="small"),
-                    "PnL_AUD":       st.column_config.TextColumn("P&L $",   width="medium"),
-                    "Cost_AUD":      st.column_config.TextColumn("Cost $",   width="medium"),
-                    "Shares":        st.column_config.TextColumn("Shares",   width="small"),
-                    "Current_Price": st.column_config.TextColumn("Price",    width="small"),
-                    "Avg_Cost":      st.column_config.TextColumn("Avg Cost", width="small"),
-                }
-            )
-    
-    def render_insights(self, df: pd.DataFrame, stats: dict):
-        """Render portfolio insights - mobile-first layout"""
-        st.markdown("---")
-        st.subheader("💡 Portfolio Insights")
-
-        equity_df  = df[df['Ticker'] != 'Cash'].copy()
-        equity_agg = equity_df.groupby('Ticker').agg(
+        agg = eq.groupby('Ticker').agg(
+            Name=('Name', 'first'),
+            Role=('Strategy_Role', 'first'),
+            Sector=('Sector', 'first'),
+            Currency=('Currency', 'first'),
+            Platforms=('Platform', lambda x: ' + '.join(sorted(set(str(v) for v in x if v)))),
+            Shares=('Shares', 'sum'),
+            NativeCost=('_NativeCost', 'sum'),
+            Current_Price=('Current_Price', 'mean'),
             MV_AUD=('MV_AUD', 'sum'),
-            PnL_AUD=('PnL_AUD', 'sum')
+            Cost_AUD=('Cost_AUD', 'sum'),
+            PnL_AUD=('PnL_AUD', 'sum'),
+            Target_Weight=('Target_Weight', 'first'),
+            Stop=('_Stop', 'max'),
+            Price_Missing=('_PriceMissing', 'any'),
         ).reset_index()
 
-        ev = stats['equity_value'] if stats['equity_value'] > 0 else 1
+        agg['Avg_Cost_Native'] = np.where(agg['Shares'] > 0,
+                                          agg['NativeCost'] / agg['Shares'], np.nan)
+        agg['PnL_%'] = np.where(agg['Cost_AUD'] > 0,
+                                agg['PnL_AUD'] / agg['Cost_AUD'] * 100, 0)
+        agg['Region'] = agg.apply(Engine.derive_region, axis=1)
+        agg['Theme'] = agg['Sector']  # theme uses Sector column
+        agg['High_Beta'] = agg['Ticker'].isin(config.HIGH_BETA)
+        # Distance to stop (in native price terms)
+        agg['Stop_Dist_%'] = np.where(
+            (agg['Stop'] > 0) & (agg['Current_Price'] > 0),
+            (agg['Current_Price'] - agg['Stop']) / agg['Current_Price'] * 100,
+            np.nan)
+        return agg
 
-        # ── Concentration ────────────────────────────────────────────────────
-        st.markdown("#### 🎯 Top Holdings")
-
-        top_holdings = equity_agg.nlargest(10, 'MV_AUD').copy()
-        top_holdings['% of Stocks'] = (top_holdings['MV_AUD'] / ev * 100).round(1)
-        top_holdings['% of Total']  = (top_holdings['MV_AUD'] / stats['total_mv'] * 100).round(1)
-        top_holdings['Market Value'] = top_holdings['MV_AUD'].apply(lambda x: f"${x:,.0f}")
-        top_holdings['% of Stocks']  = top_holdings['% of Stocks'].apply(lambda x: f"{x:.1f}%")
-        top_holdings['% of Total']   = top_holdings['% of Total'].apply(lambda x: f"{x:.1f}%")
-
-        st.dataframe(
-            top_holdings[['Ticker', 'Market Value', '% of Stocks', '% of Total']],
-            use_container_width=True,
-            hide_index=True,
-            height=360,
-            column_config={
-                "Ticker":       st.column_config.TextColumn("Stock",        width="small"),
-                "Market Value": st.column_config.TextColumn("Value",        width="medium"),
-                "% of Stocks":  st.column_config.TextColumn("% Stocks",     width="small"),
-                "% of Total":   st.column_config.TextColumn("% Portfolio",  width="small"),
-            }
-        )
-
-        # ── Concentration metric cards ────────────────────────────────────
-        top_3_pct  = equity_agg.nlargest(3,  'MV_AUD')['MV_AUD'].sum() / ev * 100
-        top_5_pct  = equity_agg.nlargest(5,  'MV_AUD')['MV_AUD'].sum() / ev * 100
-        top_10_pct = equity_agg.nlargest(10, 'MV_AUD')['MV_AUD'].sum() / ev * 100
-
-        CARD  = "background:#f8f9fa;border:1px solid #e0e0e0;border-radius:12px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,0.07);"
-        LABEL = "font-size:0.72rem;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;"
-        VALUE = "font-size:1.15rem;font-weight:700;color:#1a1a1a;line-height:1.2;"
-        DELTA = "font-size:0.78rem;font-weight:600;color:#555;margin-top:3px;"
-        GRID  = "display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;"
-
-        st.markdown(
-            f'<div style="{GRID}">'
-            f'<div style="{CARD}"><div style="{LABEL}">Top 3 Holdings</div>'
-            f'<div style="{VALUE}">{top_3_pct:.1f}%</div>'
-            f'<div style="{DELTA}">of stock portfolio</div></div>'
-            f'<div style="{CARD}"><div style="{LABEL}">Top 5 Holdings</div>'
-            f'<div style="{VALUE}">{top_5_pct:.1f}%</div>'
-            f'<div style="{DELTA}">of stock portfolio</div></div>'
-            f'<div style="{CARD}"><div style="{LABEL}">Top 10 Holdings</div>'
-            f'<div style="{VALUE}">{top_10_pct:.1f}%</div>'
-            f'<div style="{DELTA}">of stock portfolio</div></div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-        # Risk badge
-        if top_3_pct > 60:
-            st.error("🔴 High concentration — top 3 stocks = over 60% of equities. Consider rebalancing.")
-        elif top_3_pct > 50:
-            st.warning("🟡 Moderate concentration — top 3 stocks = over 50% of equities.")
-        else:
-            st.success("🟢 Well diversified — top 3 stocks = under 50% of equities.")
-
-        # ── Cash vs Stocks ───────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### 💵 Cash vs Stocks")
-
-        cash_pct   = stats['cash_pct']
-        equity_pct = stats['equity_pct']
-
-        st.markdown(
-            f'<div style="{GRID}">'
-            f'<div style="{CARD}"><div style="{LABEL}">Cash Balance</div>'
-            f'<div style="{VALUE}">${stats["cash_value"]:,.0f}</div>'
-            f'<div style="{DELTA}">{cash_pct:.1f}% of portfolio</div></div>'
-            f'<div style="{CARD}"><div style="{LABEL}">Stock Value</div>'
-            f'<div style="{VALUE}">${stats["equity_value"]:,.0f}</div>'
-            f'<div style="{DELTA}">{equity_pct:.1f}% of portfolio</div></div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-        if cash_pct > 30:
-            st.warning(f"⚠️ **{cash_pct:.1f}% in cash** — large uninvested balance. Consider deploying into positions.")
-        elif cash_pct < 5:
-            st.warning(f"⚠️ **Only {cash_pct:.1f}% cash** — very low buying power for new opportunities.")
-        else:
-            st.success(f"✅ **{cash_pct:.1f}% cash** — healthy reserve with room to invest.")
-
-        # ── Diversification Score ─────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### 🎲 Diversification Score")
-
-        position_pcts     = equity_agg['MV_AUD'] / ev * 100
-        hhi               = (position_pcts ** 2).sum()
-        div_score         = ((10000 - hhi) / 10000 * 100)
-
-        if div_score >= 70:
-            st.success(f"**{div_score:.0f} / 100 — Excellent 🎯**")
-        elif div_score >= 50:
-            st.info(f"**{div_score:.0f} / 100 — Good 👍**")
-        elif div_score >= 30:
-            st.warning(f"**{div_score:.0f} / 100 — Moderate ⚠️**")
-        else:
-            st.error(f"**{div_score:.0f} / 100 — Concentrated 🔴**")
-
-        st.progress(div_score / 100)
-        st.caption("Score based on how evenly spread your equity positions are. 100 = perfectly equal weight.")
-    
-    def render_strategy_analysis(self, df: pd.DataFrame, stats: dict):
-        """Render strategy role allocation vs targets"""
-        strategy_data = self.analytics.calculate_strategy_allocation(df, stats)
-        
-        if not strategy_data:
-            return  # No strategy role column in data
-        
-        st.markdown("---")
-        st.subheader("🎯 Strategy Allocation")
-        
-        role_df = strategy_data['data']
-        colors = strategy_data['colors']
-        total_portfolio = strategy_data['total_portfolio_value']
-        
-        # STRATEGIC TARGETS (your overall allocation strategy)
-        strategic_targets = {
-            'Core': 55.0,      # 55% of total portfolio
-            'Growth': 25.0,    # 25% of total portfolio
-            'Tactical': 10.0,  # 10% of total portfolio
-            'Cash': 10.0       # 10% of total portfolio
-        }
-        
-        # Style constants for inline cards
-        CARD_BASE = "background:#f8f9fa;border:2px solid {border};border-radius:12px;padding:14px 16px;margin:8px 0;"
-        ROLE_NAME = "font-size:0.85rem;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;"
-        METRIC_ROW = "display:flex;justify-content:space-between;align-items:center;margin:4px 0;"
-        LABEL = "font-size:0.78rem;color:#666;font-weight:600;"
-        VALUE = "font-size:1.05rem;font-weight:700;color:#1a1a1a;"
-        GAP_POS = "font-size:0.85rem;font-weight:600;color:#1a9655;"
-        GAP_NEG = "font-size:0.85rem;font-weight:600;color:#dc3545;"
-        UNALLOC = "font-size:0.8rem;font-weight:600;color:#6c757d;margin-top:4px;"
-        
-        # Render each role as a card
-        for role in strategy_data['order']:
-            role_row = role_df[role_df.iloc[:, 0] == role]
-            
-            if role_row.empty:
-                continue
-            
-            current_pct = role_row['Current_%'].values[0]
-            position_target_pct = role_row['Target_%'].values[0]  # Sum of individual position targets
-            strategic_target_pct = strategic_targets.get(role, 0)  # Overall bucket target
-            
-            # Calculate unallocated space (dry powder for this category)
-            unallocated_pct = strategic_target_pct - position_target_pct
-            unallocated_cash = (unallocated_pct / 100 * total_portfolio)
-            
-            # Gap vs strategic target
-            gap_pct = current_pct - strategic_target_pct
-            mv_aud = role_row['MV_AUD'].values[0]
-            
-            # Calculate deployment amount (negative gap = need to buy)
-            deploy_amount = (gap_pct / 100 * total_portfolio)
-            
-            border_color = colors.get(role, '#e0e0e0')
-            role_color = colors.get(role, '#666')
-            
-            gap_style = GAP_POS if gap_pct >= 0 else GAP_NEG
-            gap_arrow = "▲" if gap_pct >= 0 else "▼"
-            gap_text = f"{gap_arrow} {abs(gap_pct):.1f}% gap"
-            
-            # Deployment message
-            if deploy_amount < -1000:
-                deploy_msg = f"💰 Deploy ${abs(deploy_amount):,.0f}"
-                deploy_style = "color:#1a9655;font-weight:700;font-size:0.9rem;margin-top:6px;"
-            elif deploy_amount > 1000:
-                deploy_msg = f"💸 Trim ${deploy_amount:,.0f}"
-                deploy_style = "color:#dc3545;font-weight:700;font-size:0.9rem;margin-top:6px;"
-            else:
-                deploy_msg = "✅ On Target"
-                deploy_style = "color:#28a745;font-weight:600;font-size:0.9rem;margin-top:6px;"
-            
-            # Unallocated message
-            if unallocated_cash > 1000:
-                unalloc_msg = f"🎯 Unallocated: {unallocated_pct:.1f}% (${abs(unallocated_cash):,.0f} dry powder)"
-            else:
-                unalloc_msg = ""
-            
-            card_html = (
-                f'<div style="{CARD_BASE.format(border=border_color)}">'
-                f'  <div style="{ROLE_NAME.format(color=role_color)}">{role}</div>'
-                f'  <div style="{METRIC_ROW}">'
-                f'    <span style="{LABEL}">Current</span>'
-                f'    <span style="{VALUE}">{current_pct:.1f}%</span>'
-                f'  </div>'
-                f'  <div style="{METRIC_ROW}">'
-                f'    <span style="{LABEL}">Strategic Target</span>'
-                f'    <span style="{VALUE}">{strategic_target_pct:.1f}%</span>'
-                f'  </div>'
-                f'  <div style="{METRIC_ROW}">'
-                f'    <span style="{LABEL}">Gap</span>'
-                f'    <span style="{gap_style}">{gap_text}</span>'
-                f'  </div>'
-                f'  <div style="margin-top:8px;padding-top:8px;border-top:1px solid #e0e0e0;">'
-                f'    <span style="{LABEL}">Value:</span> '
-                f'    <span style="font-size:0.9rem;font-weight:600;color:#1a1a1a;">${mv_aud:,.0f}</span>'
-                f'  </div>'
-                f'  <div style="{deploy_style}">{deploy_msg}</div>'
-            )
-            
-            if unalloc_msg:
-                card_html += f'  <div style="{UNALLOC}">{unalloc_msg}</div>'
-            
-            card_html += '</div>'
-            
-            st.markdown(card_html, unsafe_allow_html=True)
-        
-        # Add Cash bucket
-        cash_value = stats['cash_value']
-        cash_pct = stats['cash_pct']
-        cash_target = strategic_targets['Cash']  # Use strategic target
-        cash_gap = cash_pct - cash_target
-        
-        # Calculate cash deployment (negative = deploy from cash, positive = add to cash)
-        cash_deploy = (cash_gap / 100 * total_portfolio)
-        
-        cash_gap_style = GAP_POS if cash_gap >= 0 else GAP_NEG
-        cash_arrow = "▲" if cash_gap >= 0 else "▼"
-        cash_gap_text = f"{cash_arrow} {abs(cash_gap):.1f}% gap"
-        
-        # Cash deployment message (inverted logic - high cash means deploy FROM cash)
-        if cash_deploy > 1000:
-            cash_deploy_msg = f"💰 Available to Deploy: ${cash_deploy:,.0f}"
-            cash_deploy_style = "color:#1a9655;font-weight:700;font-size:0.9rem;margin-top:6px;"
-        elif cash_deploy < -1000:
-            cash_deploy_msg = f"⚠️ Need to Raise Cash: ${abs(cash_deploy):,.0f}"
-            cash_deploy_style = "color:#dc3545;font-weight:700;font-size:0.9rem;margin-top:6px;"
-        else:
-            cash_deploy_msg = "✅ Cash Level OK"
-            cash_deploy_style = "color:#28a745;font-weight:600;font-size:0.9rem;margin-top:6px;"
-        
-        cash_card = (
-            f'<div style="{CARD_BASE.format(border="#95a5a6")}">'
-            f'  <div style="{ROLE_NAME.format(color="#7f8c8d")}">💵 CASH</div>'
-            f'  <div style="{METRIC_ROW}">'
-            f'    <span style="{LABEL}">Current</span>'
-            f'    <span style="{VALUE}">{cash_pct:.1f}%</span>'
-            f'  </div>'
-            f'  <div style="{METRIC_ROW}">'
-            f'    <span style="{LABEL}">Target</span>'
-            f'    <span style="{VALUE}">{cash_target:.1f}%</span>'
-            f'  </div>'
-            f'  <div style="{METRIC_ROW}">'
-            f'    <span style="{LABEL}">Gap</span>'
-            f'    <span style="{cash_gap_style}">{cash_gap_text}</span>'
-            f'  </div>'
-            f'  <div style="margin-top:8px;padding-top:8px;border-top:1px solid #e0e0e0;">'
-            f'    <span style="{LABEL}">Value:</span> '
-            f'    <span style="font-size:0.9rem;font-weight:600;color:#1a1a1a;">${cash_value:,.0f}</span>'
-            f'  </div>'
-            f'  <div style="{cash_deploy_style}">{cash_deploy_msg}</div>'
-            f'</div>'
-        )
-        
-        st.markdown(cash_card, unsafe_allow_html=True)
-        
-        # Summary at bottom
-        position_target_sum = role_df['Target_%'].sum()
-        strategic_target_sum = sum(strategic_targets.values())
-        total_allocated = role_df['Current_%'].sum() + cash_pct
-        
-        st.caption(f"💡 Strategic targets: Core {strategic_targets['Core']:.0f}% · Growth {strategic_targets['Growth']:.0f}% · Tactical {strategic_targets['Tactical']:.0f}% · Cash {strategic_targets['Cash']:.0f}% = {strategic_target_sum:.0f}%")
-        st.caption(f"📊 Position targets defined: {position_target_sum:.1f}% · Unallocated space: {strategic_target_sum - position_target_sum - strategic_targets['Cash']:.1f}%")
-        
-        # ═══════════════════════════════════════════════════════════════
-        # POSITION-LEVEL ALLOCATION DETAILS
-        # ═══════════════════════════════════════════════════════════════
-        st.markdown("---")
-        st.markdown("#### 📋 Position Allocation Details")
-        st.caption("Current vs Target weight for each position · Dollar gaps show how much to buy (+) or sell (−)")
-        
-        # Build position-level breakdown
-        equity_df = df[df['Ticker'] != 'Cash'].copy()
-        
-        # Determine role column name
-        role_col = 'Strategy_Role' if 'Strategy_Role' in equity_df.columns else 'Strategy Role'
-        
-        if 'Target_Weight' in equity_df.columns and role_col in equity_df.columns:
-            # Aggregate by ticker
-            pos_agg = equity_df.groupby('Ticker').agg({
-                'MV_AUD': 'sum',
-                'Target_Weight': 'first',
-                role_col: 'first'
-            }).reset_index()
-            
-            # Calculate percentages of total portfolio
-            pos_agg['Current_%'] = (pos_agg['MV_AUD'] / total_portfolio * 100).round(2)
-            pos_agg['Target_%'] = (pos_agg['Target_Weight'] * 100).round(2)
-            pos_agg['Gap_%'] = (pos_agg['Current_%'] - pos_agg['Target_%']).round(2)
-            pos_agg['Gap_$'] = (pos_agg['Gap_%'] / 100 * total_portfolio).round(0)
-            
-            # Sort by absolute gap (biggest misallocations first)
-            pos_agg['Abs_Gap'] = pos_agg['Gap_$'].abs()
-            pos_agg = pos_agg.sort_values('Abs_Gap', ascending=False)
-            
-            # Format for display
-            display_df = pos_agg[['Ticker', role_col, 'Current_%', 'Target_%', 'Gap_%', 'Gap_$']].copy()
-            display_df.columns = ['Stock', 'Role', 'Current %', 'Target %', 'Gap %', 'Gap $']
-            
-            # Add action indicators
-            display_df['Action'] = display_df['Gap $'].apply(
-                lambda x: '🟢 BUY' if x < -1000 else ('🔴 SELL' if x > 1000 else '✅ OK')
-            )
-            
-            # Reorder columns
-            display_df = display_df[['Stock', 'Role', 'Current %', 'Target %', 'Gap %', 'Gap $', 'Action']]
-            
-            # Display the table
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                height=400,
-                column_config={
-                    'Stock': st.column_config.TextColumn('Stock', width='small'),
-                    'Role': st.column_config.TextColumn('Role', width='small'),
-                    'Current %': st.column_config.NumberColumn('Current %', format='%.2f%%'),
-                    'Target %': st.column_config.NumberColumn('Target %', format='%.2f%%'),
-                    'Gap %': st.column_config.NumberColumn('Gap %', format='%+.2f%%'),
-                    'Gap $': st.column_config.NumberColumn('Gap $', format='$%,.0f'),
-                    'Action': st.column_config.TextColumn('Action', width='small'),
-                }
-            )
-            
-            # Summary stats
-            total_buy = display_df[display_df['Gap $'] < 0]['Gap $'].sum()
-            total_sell = display_df[display_df['Gap $'] > 0]['Gap $'].sum()
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("💰 Need to Deploy", f"${abs(total_buy):,.0f}", 
-                         help="Total amount to buy across all underweight positions")
-            with col2:
-                st.metric("💸 Need to Trim", f"${total_sell:,.0f}",
-                         help="Total amount to sell from overweight positions")
-            with col3:
-                net_rebalance = total_sell + total_buy
-                st.metric("⚖️ Net Rebalance", f"${net_rebalance:,.0f}",
-                         help="Net cash flow after all rebalancing (should be ~$0)")
-        else:
-            st.info("💡 Add a 'Target_Weight' column to your Google Sheet to see position-level targets")
-    
-    def _prepare_summary_view(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Aggregate holdings by ticker"""
-        df['Native_Cost_Total'] = df['Shares'] * df['Avg_Cost']
-        
-        agg = df.groupby('Ticker').agg({
-            'Shares': 'sum',
-            'Native_Cost_Total': 'sum',
-            'Current_Price': 'mean',
-            'Cost_AUD': 'sum',
-            'MV_AUD': 'sum',
-            'PnL_AUD': 'sum'
-        }).reset_index()
-        
-        agg['Avg_Cost'] = agg['Native_Cost_Total'] / agg['Shares']
-        agg['PnL_%'] = (agg['PnL_AUD'] / agg['Cost_AUD'] * 100).fillna(0)
-        
-        agg = agg[['Ticker', 'Shares', 'Avg_Cost', 'Current_Price', 
-                   'Cost_AUD', 'MV_AUD', 'PnL_AUD', 'PnL_%']]
-        
-        return self._add_totals_row(agg)
-    
-    def _prepare_detailed_view(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Show individual positions with platform info"""
-        df_view = df[[
-            'Ticker', 'Platform', 'Shares', 'Avg_Cost', 
-            'Current_Price', 'Cost_AUD', 'MV_AUD', 'PnL_AUD'
-        ]].copy()
-        
-        df_view['PnL_%'] = (df_view['PnL_AUD'] / df_view['Cost_AUD'] * 100).fillna(0)
-        
-        return self._add_totals_row(df_view)
-    
-    def _add_totals_row(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add summary totals row"""
-        df_sorted = df.sort_values('MV_AUD', ascending=False).reset_index(drop=True)
-        df_sorted.index += 1
-
-        # Build total row with NaN for non-summable columns (shows "—")
-        total_data = {col: [float('nan')] for col in df_sorted.columns}
-        total_data['Ticker']  = ['TOTAL']
-        total_data['Cost_AUD'] = [df_sorted['Cost_AUD'].sum()]
-        total_data['MV_AUD']   = [df_sorted['MV_AUD'].sum()]
-        total_data['PnL_AUD']  = [df_sorted['PnL_AUD'].sum()]
-
-        total_row = pd.DataFrame(total_data, index=[''])
-
-        total_cost = total_row['Cost_AUD'].iloc[0]
-        if total_cost != 0:
-            total_row['PnL_%'] = (total_row['PnL_AUD'] / total_cost * 100)
-
-        return pd.concat([df_sorted, total_row])
-    
     @staticmethod
-    def _get_format_dict(view_mode: str) -> dict:
-        """Get formatting dictionary for dataframe"""
+    def totals(df: pd.DataFrame, capital: float) -> dict:
+        cash = df[df['Ticker'] == 'Cash']['MV_AUD'].sum()
+        equity = df[df['Ticker'] != 'Cash']['MV_AUD'].sum()
+        total = cash + equity
         return {
-            'Shares':        "{:,.2f}",
-            'Avg_Cost':      "{:,.2f}",
-            'Current_Price': "{:,.2f}",
-            'Cost_AUD':      "${:,.0f}",
-            'MV_AUD':        "${:,.0f}",
-            'PnL_AUD':       "${:,.0f}",
-            'PnL_%':         "{:+.2f}%",
-            'Stop_Loss_Price': "{:,.2f}",
+            'cash': cash,
+            'equity': equity,
+            'total': total,
+            'capital': capital,
+            'total_pnl': total - capital,
+            'total_pnl_pct': (total - capital) / capital * 100 if capital else 0,
+            'stock_pnl': df[df['Ticker'] != 'Cash']['PnL_AUD'].sum(),
+            'cash_pct_total': cash / total * 100 if total else 0,
         }
-    
+
     @staticmethod
-    def _highlight_totals(row):
-        """Highlight totals row"""
-        if row.get('Ticker') == 'TOTAL':
-            return ['background-color: #f8f9fa; font-weight: 600'] * len(row)
-        return [''] * len(row)
-    
+    def weights(agg: pd.DataFrame, denominator: float, label: str) -> pd.DataFrame:
+        """THE weight function. denominator is explicit; label documents it."""
+        out = agg.copy()
+        out['Weight_%'] = np.where(denominator > 0,
+                                   out['MV_AUD'] / denominator * 100, 0)
+        out.attrs['denominator'] = denominator
+        out.attrs['denominator_label'] = label
+        return out
+
     @staticmethod
-    def _color_pnl(col):
-        """Color PnL values (green positive, red negative)"""
-        return [
-            'color: #28a745' if val > 0 else 'color: #dc3545' if val < 0 else ''
-            for val in col
-        ]
-    
-    def render_download(self, df: pd.DataFrame):
-        """Render CSV download with complete portfolio details in native currencies"""
-        st.markdown("---")
-        st.subheader("📥 Download Portfolio")
-        
-        # Calculate native cost total per ticker (Shares × Avg_Cost in native currency)
-        df_with_native = df.copy()
-        df_with_native['Native_Cost_Total'] = df_with_native['Shares'] * df_with_native['Avg_Cost']
-        
-        # Aggregate by ticker
-        download_df = df_with_native.groupby('Ticker').agg({
-            'Shares': 'sum',
-            'Native_Cost_Total': 'sum',
-            'Current_Price': 'mean',  # Average current price (should be same across platforms)
-            'Currency': 'first',
-            'Cost_AUD': 'sum',
-            'MV_AUD': 'sum',
-            'PnL_AUD': 'sum',
-        }).reset_index()
-        
-        # Calculate weighted average cost in native currency
-        download_df['Avg_Cost_Native'] = (download_df['Native_Cost_Total'] / download_df['Shares']).round(2)
-        
-        # Calculate P&L %
-        download_df['PnL_%'] = (download_df['PnL_AUD'] / download_df['Cost_AUD'] * 100).fillna(0).round(2)
-        
-        # Round numeric columns
-        download_df['MV_AUD'] = download_df['MV_AUD'].round(2)
-        download_df['Cost_AUD'] = download_df['Cost_AUD'].round(2)
-        download_df['PnL_AUD'] = download_df['PnL_AUD'].round(2)
-        download_df['Shares'] = download_df['Shares'].round(4)
-        download_df['Current_Price'] = download_df['Current_Price'].round(2)
-        
-        # Create display columns with currency labels
-        download_df['Avg_Cost_Display'] = download_df.apply(
-            lambda row: f"{row['Avg_Cost_Native']:.2f} {row['Currency']}" 
-                        if pd.notna(row['Avg_Cost_Native']) and pd.notna(row['Currency']) 
-                        else '',
-            axis=1
-        )
-        download_df['Current_Price_Display'] = download_df.apply(
-            lambda row: f"{row['Current_Price']:.2f} {row['Currency']}" 
-                        if pd.notna(row['Current_Price']) and pd.notna(row['Currency']) 
-                        else '',
-            axis=1
-        )
-        
-        # Reorder columns for better readability
-        download_df = download_df[[
-            'Ticker', 'Currency', 'Shares', 'Avg_Cost_Display', 'Current_Price_Display',
-            'Cost_AUD', 'MV_AUD', 'PnL_AUD', 'PnL_%'
-        ]]
-        
-        # Rename for cleaner CSV headers
-        download_df.columns = [
-            'Ticker', 'Currency', 'Shares', 'Avg Cost', 'Current Price',
-            'Cost (AUD)', 'Market Value (AUD)', 'P&L (AUD)', 'P&L %'
-        ]
-        
-        # Sort by market value
-        download_df = download_df.sort_values('Market Value (AUD)', ascending=False)
-        
-        # Add totals row
-        total_cost = download_df['Cost (AUD)'].sum().round(2)
-        total_mv = download_df['Market Value (AUD)'].sum().round(2)
-        total_pnl = download_df['P&L (AUD)'].sum().round(2)
-        total_pnl_pct = ((total_pnl / total_cost * 100) if total_cost > 0 else 0).round(2)
-        
-        total_row = pd.DataFrame({
-            'Ticker': ['TOTAL'],
-            'Currency': [''],
-            'Shares': [''],
-            'Avg Cost': [''],
-            'Current Price': [''],
-            'Cost (AUD)': [total_cost],
-            'Market Value (AUD)': [total_mv],
-            'P&L (AUD)': [total_pnl],
-            'P&L %': [total_pnl_pct]
-        })
-        
-        download_df = pd.concat([download_df, total_row], ignore_index=True)
-        
-        # Convert to CSV
-        csv = download_df.to_csv(index=False).encode('utf-8')
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.download_button(
-                label="📊 Download CSV",
-                data=csv,
-                file_name=f"portfolio_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True,
-                help="Avg Cost & Current Price in native currency (USD/AUD). All dollar values in AUD."
-            )
-        
-        with col2:
-            if st.button("🔄 Refresh Data", use_container_width=True, type="secondary"):
-                st.cache_data.clear()
-                st.rerun()
-        
-        st.caption(f"📄 {len(download_df)-1} positions + TOTAL · Data refreshes every 60s · {datetime.now().strftime('%d %b %Y %H:%M')}")
+    def group_weights(agg_w: pd.DataFrame, by: str,
+                      cash_value: float = 0.0,
+                      include_cash_row: bool = False) -> pd.DataFrame:
+        """Group ticker-level weighted table by a dimension. Weights stay
+        consistent because they were computed against one denominator."""
+        g = agg_w.groupby(agg_w[by].fillna('⚠️ Unassigned')).agg(
+            MV_AUD=('MV_AUD', 'sum'),
+            Weight_pct=('Weight_%', 'sum'),
+            Positions=('Ticker', 'count'),
+        ).reset_index().rename(columns={by: 'Group', 'Weight_pct': 'Weight_%'})
+        if include_cash_row and cash_value > 0:
+            denom = agg_w.attrs.get('denominator', 0)
+            cash_w = cash_value / denom * 100 if denom else 0
+            g = pd.concat([g, pd.DataFrame([{
+                'Group': 'Cash', 'MV_AUD': cash_value,
+                'Weight_%': cash_w, 'Positions': 1}])], ignore_index=True)
+        return g.sort_values('MV_AUD', ascending=False).reset_index(drop=True)
+
+    @staticmethod
+    def current_vs_target(agg_w: pd.DataFrame, cash_value: float) -> pd.DataFrame:
+        """THE current-vs-target function (position level).
+        Target_% is interpreted against the SAME denominator as Weight_%."""
+        denom = agg_w.attrs.get('denominator', 0)
+        cvt = agg_w.copy()
+        cvt['Target_%'] = cvt['Target_Weight'] * 100
+        cvt['Drift_%'] = cvt['Weight_%'] - cvt['Target_%']
+        cvt['Rebalance_AUD'] = -(cvt['Drift_%'] / 100 * denom)  # + = buy, − = sell
+        # Native currency amount for execution
+        cvt['Rebalance_Native'] = cvt.apply(
+            lambda r: r['Rebalance_AUD'] * st.session_state.get('_fx_rates', {}).get(r['Currency'] or 'AUD', 1.0),
+            axis=1)
+        cvt.attrs['denominator'] = denom
+        cvt.attrs['denominator_label'] = agg_w.attrs.get('denominator_label', '')
+        return cvt
+
+    @staticmethod
+    def role_rollup(cvt: pd.DataFrame, cash_value: float,
+                    denominator: float, include_cash: bool) -> pd.DataFrame:
+        """Bucket-level current vs strategic target, SAME denominator."""
+        roll = cvt.groupby(cvt['Role'].fillna('⚠️ Unassigned')).agg(
+            MV_AUD=('MV_AUD', 'sum'),
+            Current_pct=('Weight_%', 'sum'),
+            Position_Target_pct=('Target_%', 'sum'),
+            Positions=('Ticker', 'count'),
+        ).reset_index().rename(columns={'Role': 'Bucket',
+                                        'Current_pct': 'Current_%',
+                                        'Position_Target_pct': 'Position_Targets_%'})
+        if include_cash:
+            cash_w = cash_value / denominator * 100 if denominator else 0
+            roll = pd.concat([roll, pd.DataFrame([{
+                'Bucket': 'Cash', 'MV_AUD': cash_value, 'Current_%': cash_w,
+                'Position_Targets_%': np.nan, 'Positions': 1}])], ignore_index=True)
+
+        # Strategic targets only meaningful vs total portfolio.
+        roll['Strategic_%'] = roll['Bucket'].map(config.STRATEGIC_TARGETS)
+        roll['Gap_%'] = roll['Current_%'] - roll['Strategic_%']
+        roll['Gap_AUD'] = roll['Gap_%'] / 100 * denominator
+        roll['Dry_Powder_%'] = roll['Strategic_%'] - roll['Position_Targets_%']
+        roll['Dry_Powder_AUD'] = roll['Dry_Powder_%'] / 100 * denominator
+        return roll
 
 # ============================================================================
-# MAIN APPLICATION
+# CHARTS
+# ============================================================================
+
+class Charts:
+
+    @staticmethod
+    def pie(g: pd.DataFrame, title: str, denom_label: str,
+            color_map: Optional[dict] = None) -> go.Figure:
+        """Pie chart driven by the SAME Weight_% used everywhere else.
+        Slice values are AUD; hover shows the canonical weight."""
+        fig = px.pie(
+            g, values='MV_AUD', names='Group', hole=0.5,
+            color='Group',
+            color_discrete_map=color_map or {},
+            color_discrete_sequence=list(config.PALETTE),
+        )
+        # Use canonical weights in labels (NOT plotly's auto-normalised %)
+        labels = [f"{row.Group}<br>{row._2:.1f}%" if False else
+                  f"{row.Group}: {row.Weight_pct:.1f}%"
+                  for row in g.rename(columns={'Weight_%': 'Weight_pct'}).itertuples()]
+        fig.update_traces(
+            text=labels, textinfo='text', textposition='inside',
+            textfont_size=11,
+            marker=dict(line=dict(color='rgba(0,0,0,0)', width=0)),
+            hovertemplate='%{label}<br>$%{value:,.0f}<extra></extra>',
+        )
+        fig.update_layout(
+            margin=dict(t=44, b=10, l=0, r=0), height=380, showlegend=True,
+            legend=dict(orientation="v", yanchor="middle", y=0.5,
+                        xanchor="left", x=1.02, font=dict(size=11)),
+            title=dict(text=f"{title}<br><sup>{denom_label}</sup>",
+                       x=0.5, xanchor='center',
+                       font=dict(size=15, color='#2E4053')),
+        )
+        return fig
+
+    @staticmethod
+    def drift_bar(cvt: pd.DataFrame) -> go.Figure:
+        d = cvt[cvt['Target_%'].notna()].sort_values('Drift_%')
+        colors = ['#dc3545' if v > 0 else '#1a9655' for v in d['Drift_%']]
+        fig = go.Figure(go.Bar(
+            x=d['Drift_%'], y=d['Ticker'], orientation='h',
+            marker_color=colors,
+            text=[f"{v:+.1f}%" for v in d['Drift_%']],
+            textposition='outside', textfont_size=10,
+            hovertemplate='%{y}: %{x:+.2f}%<extra></extra>',
+        ))
+        fig.update_layout(
+            title=dict(text="Drift vs Target (red = overweight → trim, green = underweight → add)",
+                       font=dict(size=13, color='#2E4053')),
+            height=max(300, 24 * len(d) + 80),
+            margin=dict(t=50, b=20, l=10, r=40),
+            xaxis_title="Drift %", yaxis=dict(tickfont=dict(size=11)),
+            plot_bgcolor='#ffffff',
+        )
+        fig.add_vline(x=0, line_color='#666', line_width=1)
+        return fig
+
+# ============================================================================
+# RENDER SECTIONS
+# ============================================================================
+
+CARD = ("background:#f8f9fa;border:2px solid {b};border-radius:12px;"
+        "padding:13px 15px;margin:6px 0;")
+RNAME = ("font-size:0.82rem;font-weight:700;color:{c};text-transform:uppercase;"
+         "letter-spacing:0.5px;margin-bottom:6px;")
+MROW = "display:flex;justify-content:space-between;align-items:center;margin:3px 0;"
+LBL = "font-size:0.76rem;color:#666;font-weight:600;"
+VAL = "font-size:1.0rem;font-weight:700;color:#1a1a1a;"
+G_UP = "font-size:0.82rem;font-weight:600;color:#1a9655;"
+G_DN = "font-size:0.82rem;font-weight:600;color:#dc3545;"
+
+
+def market_session() -> Tuple[str, str]:
+    ny = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-5)))
+    h, m, wd = ny.hour, ny.minute, ny.weekday()
+    if wd >= 5:
+        return "🌙 Weekend (US Closed)", "#6c757d"
+    if h < 4 or h >= 20:
+        return "🌙 Overnight (US Closed)", "#6c757d"
+    if h < 9 or (h == 9 and m < 30):
+        return "🌅 US Pre-Market", "#f39c12"
+    if h < 16:
+        return "🟢 US Market Open", "#1a9655"
+    return "🌆 US Post-Market", "#3498db"
+
+
+def render_kpi_header(t: dict, agg_w: pd.DataFrame, fx_rate: float):
+    st.title("📊 Portfolio Command Center")
+    session, s_color = market_session()
+    st.markdown(
+        f'<div style="display:flex;justify-content:space-between;margin-bottom:6px;">'
+        f'<span style="color:#666;font-size:0.84rem;">Updated {datetime.now().strftime("%d %b %Y %H:%M")}'
+        f' · AUD/USD {fx_rate:.4f}</span>'
+        f'<span style="color:{s_color};font-size:0.84rem;font-weight:600;">{session}</span></div>',
+        unsafe_allow_html=True)
+
+    largest = agg_w.nlargest(1, 'MV_AUD') if not agg_w.empty else None
+    largest_txt = (f"{largest['Ticker'].iloc[0]} {largest['MV_AUD'].iloc[0]/t['total']*100:.1f}%"
+                   if largest is not None and not largest.empty and t['total'] else "—")
+
+    top3_pct = agg_w.nlargest(3, 'MV_AUD')['MV_AUD'].sum() / t['total'] * 100 if t['total'] else 0
+    cash_pct = t['cash_pct_total']
+    if top3_pct > 45 or cash_pct < 5:
+        risk_status, risk_delta = "🔴 Elevated", f"Top3 {top3_pct:.0f}% · Cash {cash_pct:.0f}%"
+    elif top3_pct > 35 or cash_pct < 8:
+        risk_status, risk_delta = "🟡 Watch", f"Top3 {top3_pct:.0f}% · Cash {cash_pct:.0f}%"
+    else:
+        risk_status, risk_delta = "🟢 Normal", f"Top3 {top3_pct:.0f}% · Cash {cash_pct:.0f}%"
+
+    r1 = st.columns(3)
+    r1[0].metric("Total Value (AUD)", f"${t['total']:,.0f}",
+                 f"{t['total_pnl_pct']:+.2f}% vs capital")
+    r1[1].metric("Lifetime P&L", f"${t['total_pnl']:,.0f}",
+                 f"capital ${t['capital']:,.0f}")
+    r1[2].metric("Risk Status", risk_status, risk_delta, delta_color="off")
+
+    r2 = st.columns(3)
+    r2[0].metric("Cash", f"${t['cash']:,.0f}", f"{cash_pct:.1f}% of total")
+    r2[1].metric("Invested", f"${t['equity']:,.0f}",
+                 f"{100-cash_pct:.1f}% of total")
+    r2[2].metric("Positions", f"{len(agg_w)}", f"largest: {largest_txt}", delta_color="off")
+
+
+def render_allocation(agg_w: pd.DataFrame, t: dict, denom_label: str, include_cash: bool):
+    st.subheader("🥧 Allocation")
+    st.caption(f"**Denominator: {denom_label}.** All percentages below use this same base "
+               f"and therefore reconcile with the Current vs Target section.")
+
+    dim = st.radio("Dimension",
+                   ["Strategy Role", "Sector / Theme", "Currency", "Platform", "Region"],
+                   horizontal=True, label_visibility="collapsed")
+    dim_col = {"Strategy Role": "Role", "Sector / Theme": "Theme",
+               "Currency": "Currency", "Platform": "Platforms",
+               "Region": "Region"}[dim]
+
+    g = Engine.group_weights(agg_w, dim_col,
+                             cash_value=t['cash'],
+                             include_cash_row=include_cash)
+    cmap = config.ROLE_COLORS if dim_col == 'Role' else None
+
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        st.plotly_chart(Charts.pie(g, dim, denom_label, cmap),
+                        use_container_width=True)
+    with c2:
+        show = g.copy()
+        show['MV_AUD'] = show['MV_AUD'].map('${:,.0f}'.format)
+        show['Weight_%'] = show['Weight_%'].map('{:.1f}%'.format)
+        st.dataframe(show, use_container_width=True, hide_index=True, height=340)
+        st.caption(f"Sum of weights: {g['Weight_%'].sum():.1f}% "
+                   f"({'includes' if include_cash else 'excludes'} cash)")
+
+
+def render_current_vs_target(cvt: pd.DataFrame, roll: pd.DataFrame,
+                             t: dict, denominator: float,
+                             denom_label: str, include_cash: bool):
+    st.subheader("🎯 Current vs Target")
+    st.caption(f"**Denominator: {denom_label}.** Strategic bucket targets "
+               f"(Core {config.STRATEGIC_TARGETS['Core']:.0f} / Growth {config.STRATEGIC_TARGETS['Growth']:.0f} / "
+               f"Tactical {config.STRATEGIC_TARGETS['Tactical']:.0f} / Cash {config.STRATEGIC_TARGETS['Cash']:.0f}) "
+               f"are defined against the total portfolio."
+               + ("" if include_cash else " ⚠️ In Invested-Only view bucket gaps vs strategic targets are hidden "
+                  "because those targets include cash."))
+
+    # ── Bucket cards ──
+    order = ['Core', 'Growth', 'Tactical'] + (['Cash'] if include_cash else [])
+    cols = st.columns(len(order))
+    for i, bucket in enumerate(order):
+        row = roll[roll['Bucket'] == bucket]
+        if row.empty:
+            continue
+        r = row.iloc[0]
+        color = config.ROLE_COLORS.get(bucket, '#666')
+        html = (f'<div style="{CARD.format(b=color)}">'
+                f'<div style="{RNAME.format(c=color)}">{bucket}</div>'
+                f'<div style="{MROW}"><span style="{LBL}">Current</span>'
+                f'<span style="{VAL}">{r["Current_%"]:.1f}%</span></div>')
+        if include_cash and pd.notna(r.get('Strategic_%')):
+            gap = r['Gap_%']
+            g_style = G_UP if gap >= 0 else G_DN
+            arrow = "▲" if gap >= 0 else "▼"
+            html += (f'<div style="{MROW}"><span style="{LBL}">Strategic Target</span>'
+                     f'<span style="{VAL}">{r["Strategic_%"]:.0f}%</span></div>'
+                     f'<div style="{MROW}"><span style="{LBL}">Gap</span>'
+                     f'<span style="{g_style}">{arrow} {abs(gap):.1f}% (${abs(r["Gap_AUD"]):,.0f})</span></div>')
+            if bucket != 'Cash' and pd.notna(r.get('Dry_Powder_%')) and r['Dry_Powder_AUD'] > 1000:
+                html += (f'<div style="font-size:0.76rem;color:#6c757d;font-weight:600;margin-top:4px;">'
+                         f'🎯 Unallocated: {r["Dry_Powder_%"]:.1f}% '
+                         f'(${r["Dry_Powder_AUD"]:,.0f} dry powder)</div>')
+        html += (f'<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e0e0e0;">'
+                 f'<span style="{LBL}">Value </span>'
+                 f'<span style="font-size:0.86rem;font-weight:600;">${r["MV_AUD"]:,.0f}</span></div></div>')
+        cols[i].markdown(html, unsafe_allow_html=True)
+
+    # ── Position-level table ──
+    st.markdown("##### Position drift vs target")
+    d = cvt.copy()
+    d = d[['Ticker', 'Role', 'Weight_%', 'Target_%', 'Drift_%',
+           'Rebalance_AUD', 'Rebalance_Native', 'Currency']]
+    d = d.sort_values('Drift_%', key=lambda s: s.abs(), ascending=False)
+    d['Action'] = np.select(
+        [d['Target_%'].isna(), d['Rebalance_AUD'] > 1000, d['Rebalance_AUD'] < -1000],
+        ['⚠️ No target', '🟢 ADD', '🔴 TRIM'], default='✅ OK')
+    d['Rebalance (Native)'] = d.apply(
+        lambda r: f"{r['Rebalance_Native']:+,.0f} {r['Currency'] or 'AUD'}"
+        if pd.notna(r['Rebalance_Native']) and pd.notna(r['Target_%']) else "—", axis=1)
+
+    st.dataframe(
+        d.drop(columns=['Rebalance_Native', 'Currency']),
+        use_container_width=True, hide_index=True, height=420,
+        column_config={
+            'Ticker': st.column_config.TextColumn('Stock', width='small'),
+            'Role': st.column_config.TextColumn('Role', width='small'),
+            'Weight_%': st.column_config.NumberColumn('Current %', format='%.2f%%'),
+            'Target_%': st.column_config.NumberColumn('Target %', format='%.2f%%'),
+            'Drift_%': st.column_config.NumberColumn('Drift %', format='%+.2f%%'),
+            'Rebalance_AUD': st.column_config.NumberColumn('Rebalance (AUD)', format='$%+,.0f'),
+            'Rebalance (Native)': st.column_config.TextColumn('Rebalance (Native)'),
+            'Action': st.column_config.TextColumn('Action', width='small'),
+        })
+    st.caption("Rebalance: + means buy that amount, − means sell. Native column is the "
+               "order size in the stock's own trading currency.")
+
+    with st.expander("📉 Drift chart"):
+        st.plotly_chart(Charts.drift_bar(cvt), use_container_width=True)
+
+
+def render_positions(cvt: pd.DataFrame, fx_rates: dict):
+    st.subheader("📋 Positions")
+
+    f1, f2, f3 = st.columns([2, 2, 3])
+    with f1:
+        roles = ['All'] + sorted(cvt['Role'].dropna().unique().tolist())
+        f_role = st.selectbox("Role", roles)
+    with f2:
+        curs = ['All'] + sorted(cvt['Currency'].dropna().unique().tolist())
+        f_cur = st.selectbox("Currency", curs)
+    with f3:
+        search = st.text_input("Search ticker / name", "")
+
+    d = cvt.copy()
+    if f_role != 'All':
+        d = d[d['Role'] == f_role]
+    if f_cur != 'All':
+        d = d[d['Currency'] == f_cur]
+    if search:
+        s = search.lower()
+        d = d[d['Ticker'].str.lower().str.contains(s, na=False) |
+              d['Name'].astype(str).str.lower().str.contains(s, na=False)]
+
+    d = d.sort_values('MV_AUD', ascending=False)
+    d['Note'] = np.select(
+        [d['Target_%'].isna(),
+         (d['Stop_Dist_%'].notna()) & (d['Stop_Dist_%'] < 5),
+         d['Rebalance_AUD'] < -1000,
+         d['Rebalance_AUD'] > 1000],
+        ['Set target', '⚠️ Near stop', 'Trim to target', 'Add to target'],
+        default='Hold')
+
+    view = d[['Ticker', 'Role', 'Platforms', 'Shares', 'Avg_Cost_Native',
+              'Current_Price', 'Currency', 'MV_AUD', 'PnL_AUD', 'PnL_%',
+              'Weight_%', 'Target_%', 'Drift_%', 'Stop', 'Stop_Dist_%', 'Note']]
+
+    styled = view.style \
+        .format({'Shares': '{:,.2f}', 'Avg_Cost_Native': '{:,.2f}',
+                 'Current_Price': '{:,.2f}', 'MV_AUD': '${:,.0f}',
+                 'PnL_AUD': '${:,.0f}', 'PnL_%': '{:+.1f}%',
+                 'Weight_%': '{:.2f}%', 'Target_%': '{:.2f}%',
+                 'Drift_%': '{:+.2f}%', 'Stop': '{:,.2f}',
+                 'Stop_Dist_%': '{:.1f}%'}, na_rep='—') \
+        .apply(lambda col: ['color:#1a9655;font-weight:600' if isinstance(v, (int, float)) and v > 0
+                            else 'color:#dc3545;font-weight:600' if isinstance(v, (int, float)) and v < 0
+                            else '' for v in col],
+               subset=['PnL_AUD', 'PnL_%', 'Drift_%'])
+
+    st.dataframe(styled, use_container_width=True, height=480,
+                 column_config={
+                     'Ticker': 'Stock', 'Avg_Cost_Native': 'Avg Cost',
+                     'Current_Price': 'Price', 'MV_AUD': 'Mkt Val (AUD)',
+                     'PnL_AUD': 'P&L (AUD)', 'PnL_%': 'P&L %',
+                     'Weight_%': 'Weight %', 'Target_%': 'Target %',
+                     'Drift_%': 'Drift %', 'Stop_Dist_%': 'To Stop %'})
+    st.caption(f"{len(d)} positions shown · Avg Cost & Price in native currency · "
+               f"Add a Stop_Price column in the sheet to populate stop levels.")
+
+
+def render_execution(cvt: pd.DataFrame, roll: pd.DataFrame, include_cash: bool):
+    st.subheader("⚡ Execution")
+    st.caption("Everything here derives from the same drift table above — no separate math.")
+
+    trims = cvt[cvt['Rebalance_AUD'] < -1000].sort_values('Rebalance_AUD')
+    adds = cvt[(cvt['Rebalance_AUD'] > 1000) & cvt['Target_%'].notna()] \
+        .sort_values('Rebalance_AUD', ascending=False)
+    near_stop = cvt[(cvt['Stop_Dist_%'].notna()) & (cvt['Stop_Dist_%'] < 10)] \
+        .sort_values('Stop_Dist_%')
+    watch = cvt[cvt['Target_%'].notna() & (cvt['Shares'] <= 0)]
+    no_target = cvt[cvt['Target_%'].isna()]
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### 🔴 Trim candidates (overweight)")
+        if trims.empty:
+            st.success("None — nothing overweight by >$1k")
+        else:
+            for _, r in trims.iterrows():
+                st.markdown(f"- **{r['Ticker']}** trim **${abs(r['Rebalance_AUD']):,.0f}** "
+                            f"({r['Rebalance_Native']:+,.0f} {r['Currency'] or 'AUD'}) · "
+                            f"drift {r['Drift_%']:+.1f}%")
+    with c2:
+        st.markdown("##### 🟢 Add candidates (underweight)")
+        if adds.empty:
+            st.success("None — nothing underweight by >$1k")
+        else:
+            for _, r in adds.iterrows():
+                st.markdown(f"- **{r['Ticker']}** add **${r['Rebalance_AUD']:,.0f}** "
+                            f"({r['Rebalance_Native']:+,.0f} {r['Currency'] or 'AUD'}) · "
+                            f"drift {r['Drift_%']:+.1f}%")
+
+    c3, c4 = st.columns(2)
+    with c3:
+        st.markdown("##### ⚠️ Closest to stop")
+        if near_stop.empty:
+            st.info("No positions within 10% of a stop (or no Stop_Price column).")
+        else:
+            for _, r in near_stop.iterrows():
+                st.markdown(f"- **{r['Ticker']}** {r['Stop_Dist_%']:.1f}% above stop "
+                            f"({r['Current_Price']:,.2f} vs stop {r['Stop']:,.2f})")
+    with c4:
+        st.markdown("##### 👀 Watchlist / unassigned")
+        if not watch.empty:
+            for _, r in watch.iterrows():
+                st.markdown(f"- **{r['Ticker']}** target {r['Target_%']:.1f}% — not yet bought")
+        if not no_target.empty:
+            names = ', '.join(no_target['Ticker'].tolist())
+            st.markdown(f"- No target set: **{names}**")
+        if watch.empty and no_target.empty:
+            st.success("All positions have targets.")
+
+    if include_cash:
+        dry = roll[roll['Bucket'].isin(['Core', 'Growth', 'Tactical'])]
+        total_dry = dry['Dry_Powder_AUD'].clip(lower=0).sum()
+        if total_dry > 1000:
+            st.info(f"💰 Total unallocated dry powder across buckets: **${total_dry:,.0f}** "
+                    f"(strategic target space without named positions)")
+
+
+def render_risk(cvt: pd.DataFrame, t: dict, denom_label: str):
+    st.subheader("🛡️ Risk")
+    st.caption(f"Denominator: {denom_label}")
+
+    denom = cvt.attrs.get('denominator', t['total'])
+    top10 = cvt.nlargest(10, 'MV_AUD')
+    top10_pct = top10['MV_AUD'].sum() / denom * 100 if denom else 0
+    hb = cvt[cvt['High_Beta']]
+    hb_pct = hb['MV_AUD'].sum() / denom * 100 if denom else 0
+    jp = cvt[cvt['Currency'] == 'JPY']
+    jp_pct = jp['MV_AUD'].sum() / denom * 100 if denom else 0
+    cash_pct = t['cash_pct_total']
+
+    m = st.columns(4)
+    m[0].metric("Top 10 concentration", f"{top10_pct:.1f}%",
+                f"${top10['MV_AUD'].sum():,.0f}", delta_color="off")
+    m[1].metric("High-beta exposure", f"{hb_pct:.1f}%",
+                f"{len(hb)} names", delta_color="off")
+    m[2].metric("🇯🇵 Japan components basket", f"{jp_pct:.1f}%",
+                f"${jp['MV_AUD'].sum():,.0f}", delta_color="off")
+    cash_state = ("🟢 within band" if 5 <= cash_pct <= 15 else
+                  ("🔴 below floor" if cash_pct < 5 else "🟡 above band"))
+    m[3].metric("Cash buffer", f"{cash_pct:.1f}%", cash_state, delta_color="off")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### Top 10 positions")
+        show = top10[['Ticker', 'Role', 'MV_AUD', 'Weight_%']].copy()
+        show['MV_AUD'] = show['MV_AUD'].map('${:,.0f}'.format)
+        show['Weight_%'] = show['Weight_%'].map('{:.1f}%'.format)
+        st.dataframe(show, hide_index=True, use_container_width=True)
+    with c2:
+        st.markdown("##### Theme concentration")
+        theme = Engine.group_weights(cvt, 'Theme')
+        show = theme[['Group', 'MV_AUD', 'Weight_%', 'Positions']].copy()
+        show['MV_AUD'] = show['MV_AUD'].map('${:,.0f}'.format)
+        show['Weight_%'] = show['Weight_%'].map('{:.1f}%'.format)
+        st.dataframe(show, hide_index=True, use_container_width=True)
+        if not hb.empty:
+            st.caption("High-beta names: " + ', '.join(hb['Ticker'].tolist()))
+
+
+def render_data_quality(raw: pd.DataFrame, cvt: pd.DataFrame, t: dict):
+    st.subheader("🔍 Data Quality")
+    issues = 0
+
+    checks = []
+    missing_price = cvt[cvt['Price_Missing']]
+    checks.append(("Missing live prices (using cost basis)",
+                   missing_price['Ticker'].tolist()))
+    checks.append(("Missing target weights",
+                   cvt[cvt['Target_Weight'].isna()]['Ticker'].tolist()))
+    checks.append(("Missing sector / theme",
+                   cvt[cvt['Sector'].isna()]['Ticker'].tolist()))
+    checks.append(("Missing strategy role",
+                   cvt[cvt['Role'].isna()]['Ticker'].tolist()))
+
+    eq = raw[raw['Ticker'] != 'Cash']
+    dupes = eq.groupby(['Ticker', 'Platform']).size()
+    dupe_list = [f"{tk} ({pf})" for (tk, pf), n in dupes.items() if n > 1]
+    checks.append(("Duplicate ticker+platform rows", dupe_list))
+
+    for label, items in checks:
+        if items:
+            issues += 1
+            st.warning(f"**{label}:** {', '.join(items)}")
+        else:
+            st.success(f"**{label}:** none ✓")
+
+    # Reconciliation: parts must sum to the whole
+    parts = cvt['MV_AUD'].sum() + t['cash']
+    diff = abs(parts - t['total'])
+    if diff < 1:
+        st.success(f"**Reconciliation:** positions (${cvt['MV_AUD'].sum():,.0f}) + "
+                   f"cash (${t['cash']:,.0f}) = total (${t['total']:,.0f}) ✓")
+    else:
+        issues += 1
+        st.error(f"**Reconciliation mismatch:** parts sum to ${parts:,.0f} but "
+                 f"total is ${t['total']:,.0f} (diff ${diff:,.0f})")
+
+    tgt_sum = cvt['Target_Weight'].fillna(0).sum() * 100
+    strat_sum = sum(v for k, v in config.STRATEGIC_TARGETS.items() if k != 'Cash')
+    st.info(f"Position targets sum to **{tgt_sum:.1f}%** vs strategic stock buckets "
+            f"**{strat_sum:.0f}%** (+{config.STRATEGIC_TARGETS['Cash']:.0f}% cash). "
+            f"Unallocated target space: **{strat_sum - tgt_sum:.1f}%**")
+
+    if issues == 0:
+        st.balloons()
+
+
+def render_download(cvt: pd.DataFrame, t: dict):
+    st.subheader("📥 Export")
+    out = cvt[['Ticker', 'Role', 'Sector', 'Currency', 'Platforms', 'Shares',
+               'Avg_Cost_Native', 'Current_Price', 'Cost_AUD', 'MV_AUD',
+               'PnL_AUD', 'PnL_%', 'Weight_%', 'Target_%', 'Drift_%',
+               'Rebalance_AUD']].copy()
+    out = out.sort_values('MV_AUD', ascending=False)
+    cash_row = pd.DataFrame([{'Ticker': 'Cash', 'MV_AUD': t['cash'],
+                              'Cost_AUD': t['cash']}])
+    total_row = pd.DataFrame([{'Ticker': 'TOTAL', 'MV_AUD': t['total'],
+                               'Cost_AUD': out['Cost_AUD'].sum() + t['cash'],
+                               'PnL_AUD': t['total_pnl']}])
+    out = pd.concat([out, cash_row, total_row], ignore_index=True)
+    csv = out.to_csv(index=False).encode('utf-8')
+
+    c1, c2 = st.columns(2)
+    c1.download_button("📊 Download Portfolio CSV", csv,
+                       f"portfolio_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                       "text/csv", use_container_width=True)
+    if c2.button("🔄 Force Refresh", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+# ============================================================================
+# MAIN
 # ============================================================================
 
 def main():
-    """Main application entry point"""
-    # Setup
     setup_page()
-    
-    # Initialize dashboard (no authentication)
-    dashboard = Dashboard()
-    
-    try:
-        # Load data
-        df_raw = dashboard.data_manager.load_portfolio_data()
-        
-        if df_raw.empty:
-            st.error("❌ No portfolio data available")
-            st.stop()
-        
-        # Extract capital and filter
-        capital_row = df_raw[df_raw['Ticker'] == 'CAPITAL']
-        capital = capital_row['Shares'].sum() if not capital_row.empty else 743564
-        
-        df_clean = df_raw[df_raw['Ticker'] != 'CAPITAL'].copy()
-        
-        # Fetch market data
-        df_enriched, fx_rate = dashboard.data_manager.fetch_market_data(df_clean)
-        
-        # Calculate statistics
-        stats = dashboard.analytics.calculate_summary_stats(df_enriched, capital)
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # MODE SELECTOR - Let user choose mobile or desktop experience
-        # ═══════════════════════════════════════════════════════════════════
-        st.markdown("### Display Mode")
-        mode = st.radio(
-            "Choose your view",
-            ["📱 Mobile (Simple & Clean)", "💻 Desktop (Full Dashboard)"],
-            horizontal=True,
-            help="Mobile mode: Clean cards, simple lists, fast. Desktop mode: Full charts, tables, analytics."
-        )
-        
-        is_mobile = "Mobile" in mode
-        
+
+    raw = DataManager.load_portfolio_data()
+    if raw.empty:
+        st.error("❌ No portfolio data available")
+        st.stop()
+
+    capital_row = raw[raw['Ticker'] == 'CAPITAL']
+    capital = capital_row['Shares'].sum() if not capital_row.empty else 0
+    if capital == 0 and not capital_row.empty:
+        capital = capital_row['Avg_Cost'].sum()
+    df = raw[raw['Ticker'] != 'CAPITAL'].copy()
+
+    df, fx_rate, fx_rates = DataManager.fetch_market_data(df)
+    st.session_state['_fx_rates'] = fx_rates
+
+    # ── Canonical pipeline: aggregate → totals → weights → CvT → rollup ──
+    agg = Engine.aggregate(df)
+    t = Engine.totals(df, capital)
+
+    # Global denominator toggle
+    view = st.radio("Allocation basis",
+                    ["💼 Total Portfolio View (incl. cash)",
+                     "📈 Invested Only View (excl. cash)"],
+                    horizontal=True)
+    include_cash = "Total" in view
+    denominator = t['total'] if include_cash else t['equity']
+    denom_label = ("Total portfolio incl. cash" if include_cash
+                   else "Invested capital only, cash excluded")
+
+    agg_w = Engine.weights(agg, denominator, denom_label)
+    cvt = Engine.current_vs_target(agg_w, t['cash'])
+    roll = Engine.role_rollup(cvt, t['cash'], denominator, include_cash)
+
+    render_kpi_header(t, agg_w, fx_rate)
+    st.markdown("---")
+
+    tabs = st.tabs(["📊 Overview", "🥧 Allocation", "📋 Positions",
+                    "⚡ Execution", "🛡️ Risk", "🔍 Data Quality"])
+
+    with tabs[0]:
+        render_current_vs_target(cvt, roll, t, denominator, denom_label, include_cash)
         st.markdown("---")
-        
-        if is_mobile:
-            # ═══════════════════════════════════════════════════════════
-            # MOBILE MODE - Simple, clean, essential info only
-            # ═══════════════════════════════════════════════════════════
-            dashboard.render_header(stats, fx_rate)
-            
-            # Strategy allocation (simplified for mobile)
-            dashboard.render_strategy_analysis(df_enriched, stats)
-            
-            # Just the essentials
-            dashboard.render_holdings_table(df_enriched, force_mobile=True)
-            dashboard.render_download(df_enriched)
-            
-            # Simple insights
-            st.markdown("---")
-            st.subheader("💡 Quick Insights")
-            
-            equity_df = df_enriched[df_enriched['Ticker'] != 'Cash'].copy()
-            equity_agg = equity_df.groupby('Ticker').agg(
-                MV_AUD=('MV_AUD', 'sum')
-            ).reset_index()
-            
-            top_3_pct = equity_agg.nlargest(3, 'MV_AUD')['MV_AUD'].sum() / stats['equity_value'] * 100 if stats['equity_value'] > 0 else 0
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("💵 Cash", f"${stats['cash_value']:,.0f}", f"{stats['cash_pct']:.1f}%")
-            with col2:
-                st.metric("🎯 Top 3", f"{top_3_pct:.1f}%", "of stocks")
-            
-            if top_3_pct > 60:
-                st.warning("⚠️ High concentration in top 3 positions")
-            elif top_3_pct > 50:
-                st.info("ℹ️ Moderate concentration")
-            else:
-                st.success("✅ Well diversified")
-            
-            # Refresh button
-            st.markdown("---")
-            if st.button("🔄 Refresh Data", use_container_width=True, type="primary"):
-                st.cache_data.clear()
-                st.rerun()
-        
-        else:
-            # ═══════════════════════════════════════════════════════════
-            # DESKTOP MODE - Full dashboard with all features
-            # ═══════════════════════════════════════════════════════════
-            dashboard.render_header(stats, fx_rate)
-            dashboard.render_charts(df_enriched)
-            dashboard.render_strategy_analysis(df_enriched, stats)
-            dashboard.render_insights(df_enriched, stats)
-            dashboard.render_holdings_table(df_enriched, force_mobile=False)
-            dashboard.render_download(df_enriched)
-        
-    except Exception as e:
-        logger.error(f"Application error: {e}")
-        st.error(f"❌ An error occurred: {str(e)}")
-        st.info("Please try refreshing the page or contact support")
+        render_download(cvt, t)
+    with tabs[1]:
+        render_allocation(agg_w, t, denom_label, include_cash)
+    with tabs[2]:
+        render_positions(cvt, fx_rates)
+    with tabs[3]:
+        render_execution(cvt, roll, include_cash)
+    with tabs[4]:
+        render_risk(cvt, t, denom_label)
+    with tabs[5]:
+        render_data_quality(df, cvt, t)
+
 
 if __name__ == "__main__":
     main()
