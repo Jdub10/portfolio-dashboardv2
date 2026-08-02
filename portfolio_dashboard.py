@@ -200,7 +200,10 @@ class DataManager:
                     raise ValueError("No market data received")
                 if isinstance(data, pd.Series):
                     data = data.to_frame()
-                latest = data.ffill().iloc[-1]
+                filled = data.ffill()
+                latest = filled.iloc[-1]
+                prev = filled.iloc[-2] if len(filled) >= 2 else latest
+                day_chg = ((latest / prev) - 1) * 100
 
             fallback = {'USD': 0.66, 'JPY': 99.0, 'SEK': 6.85, 'EUR': 0.61, 'GBP': 0.52}
             for c in currencies:
@@ -217,6 +220,8 @@ class DataManager:
             df['Current_Price'] = df['Current_Price'].fillna(df['Avg_Cost'])
             df.loc[df['Ticker'] == 'Cash', 'Current_Price'] = 1.0
             df.loc[df['Ticker'] == 'Cash', 'Price_Missing'] = False
+            df['Day_%'] = df['Ticker'].map(day_chg).fillna(0.0)
+            df.loc[df['Ticker'] == 'Cash', 'Day_%'] = 0.0
 
             def to_aud(row, col):
                 native = row[col] * row['Shares']
@@ -236,6 +241,7 @@ class DataManager:
             df = df.copy()
             df['Current_Price'] = df['Avg_Cost']
             df['Price_Missing'] = df['Ticker'] != 'Cash'
+            df['Day_%'] = 0.0
             df['MV_AUD'] = df['Avg_Cost'] * df['Shares']
             df['Cost_AUD'] = df['MV_AUD']
             df['PnL_AUD'] = 0.0
@@ -281,6 +287,8 @@ class Engine:
         eq['_Stop'] = eq[stop_col] if stop_col else np.nan
         eq['_NativeCost'] = eq['Shares'] * eq['Avg_Cost']
         eq['_PriceMissing'] = eq.get('Price_Missing', False)
+        if 'Day_%' not in eq.columns:
+            eq['Day_%'] = 0.0
 
         agg = eq.groupby('Ticker').agg(
             Name=('Name', 'first'),
@@ -297,7 +305,8 @@ class Engine:
             Target_Weight=('Target_Weight', 'first'),
             Stop=('_Stop', 'max'),
             Price_Missing=('_PriceMissing', 'any'),
-        ).reset_index()
+            Day_pct=('Day_%', 'mean'),
+        ).reset_index().rename(columns={'Day_pct': 'Day_%'})
 
         agg['Avg_Cost_Native'] = np.where(agg['Shares'] > 0,
                                           agg['NativeCost'] / agg['Shares'], np.nan)
@@ -439,6 +448,39 @@ class Charts:
         return fig
 
     @staticmethod
+    def treemap(cvt: pd.DataFrame, cash_value: float,
+                include_cash: bool) -> go.Figure:
+        """Portfolio map: box size = value, colour = P&L%. Role → Ticker."""
+        d = cvt[['Ticker', 'Role', 'MV_AUD', 'PnL_%', 'Weight_%']].copy()
+        d['Role'] = d['Role'].fillna('Unassigned')
+        if include_cash and cash_value > 0:
+            denom = cvt.attrs.get('denominator', 0)
+            d = pd.concat([d, pd.DataFrame([{
+                'Ticker': 'Cash', 'Role': 'Cash', 'MV_AUD': cash_value,
+                'PnL_%': 0.0,
+                'Weight_%': cash_value / denom * 100 if denom else 0}])],
+                ignore_index=True)
+        fig = px.treemap(
+            d, path=[px.Constant('Portfolio'), 'Role', 'Ticker'],
+            values='MV_AUD', color='PnL_%',
+            color_continuous_scale=['#c0392b', '#f5f5f5', '#1a9655'],
+            color_continuous_midpoint=0, range_color=[-40, 40],
+            custom_data=['Weight_%', 'PnL_%'],
+        )
+        fig.update_traces(
+            textinfo='label+percent parent',
+            hovertemplate=('<b>%{label}</b><br>$%{value:,.0f}<br>'
+                           'Weight %{customdata[0]:.1f}%<br>'
+                           'P&L %{customdata[1]:+.1f}%<extra></extra>'),
+            marker=dict(line=dict(color='#ffffff', width=1.5)),
+        )
+        fig.update_layout(
+            margin=dict(t=30, b=10, l=0, r=0), height=430,
+            coloraxis_colorbar=dict(title='P&L %'),
+        )
+        return fig
+
+    @staticmethod
     def drift_bar(cvt: pd.DataFrame) -> go.Figure:
         d = cvt[cvt['Target_%'].notna()].sort_values('Drift_%')
         colors = ['#dc3545' if v > 0 else '#1a9655' for v in d['Drift_%']]
@@ -489,15 +531,33 @@ def market_session() -> Tuple[str, str]:
     return "🌆 US Post-Market", "#3498db"
 
 
-def render_kpi_header(t: dict, agg_w: pd.DataFrame, fx_rate: float):
+def render_kpi_header(t: dict, agg_w: pd.DataFrame, fx_rates: dict):
     st.title("📊 Portfolio Command Center")
     session, s_color = market_session()
+    fx_txt = ' · '.join(f"{c} {r:,.2f}" if c == 'JPY' else f"{c} {r:.4f}"
+                        for c, r in fx_rates.items() if c != 'AUD')
     st.markdown(
         f'<div style="display:flex;justify-content:space-between;margin-bottom:6px;">'
         f'<span style="color:#666;font-size:0.84rem;">Updated {datetime.now().strftime("%d %b %Y %H:%M")}'
-        f' · AUD/USD {fx_rate:.4f}</span>'
+        f' · AUD → {fx_txt}</span>'
         f'<span style="color:{s_color};font-size:0.84rem;font-weight:600;">{session}</span></div>',
         unsafe_allow_html=True)
+
+    # Daily movers strip
+    if 'Day_%' in agg_w.columns and agg_w['Day_%'].abs().sum() > 0:
+        movers = agg_w[['Ticker', 'Day_%']].dropna()
+        gainers = movers.nlargest(3, 'Day_%')
+        losers = movers.nsmallest(3, 'Day_%')
+        chips = ''.join(
+            f'<span style="background:#eafaf1;color:#1a9655;border-radius:8px;'
+            f'padding:2px 8px;margin-right:6px;font-size:0.78rem;font-weight:600;">'
+            f'{r.Ticker} +{r._2:.1f}%</span>' for r in gainers.itertuples()) + \
+            ''.join(
+            f'<span style="background:#fdecea;color:#dc3545;border-radius:8px;'
+            f'padding:2px 8px;margin-right:6px;font-size:0.78rem;font-weight:600;">'
+            f'{r.Ticker} {r._2:.1f}%</span>' for r in losers.itertuples())
+        st.markdown(f'<div style="margin-bottom:8px;">📈 Today: {chips}</div>',
+                    unsafe_allow_html=True)
 
     largest = agg_w.nlargest(1, 'MV_AUD') if not agg_w.empty else None
     largest_txt = (f"{largest['Ticker'].iloc[0]} {largest['MV_AUD'].iloc[0]/t['total']*100:.1f}%"
@@ -532,21 +592,50 @@ def render_allocation(agg_w: pd.DataFrame, t: dict, denom_label: str, include_ca
                f"and therefore reconcile with the Current vs Target section.")
 
     dim = st.radio("Dimension",
-                   ["Strategy Role", "Sector / Theme", "Currency", "Platform", "Region"],
+                   ["Holdings", "Strategy Role", "Sector / Theme",
+                    "Currency", "Platform", "Region"],
                    horizontal=True, label_visibility="collapsed")
-    dim_col = {"Strategy Role": "Role", "Sector / Theme": "Theme",
-               "Currency": "Currency", "Platform": "Platforms",
-               "Region": "Region"}[dim]
 
-    g = Engine.group_weights(agg_w, dim_col,
-                             cash_value=t['cash'],
-                             include_cash_row=include_cash)
-    cmap = config.ROLE_COLORS if dim_col == 'Role' else None
+    if dim == "Holdings":
+        # Per-stock pie: every position is its own slice, small ones grouped
+        h = agg_w[['Ticker', 'MV_AUD', 'Weight_%']].copy()
+        big = h[h['Weight_%'] >= 1.0]
+        small = h[h['Weight_%'] < 1.0]
+        g = big.rename(columns={'Ticker': 'Group'})
+        g['Positions'] = 1
+        if not small.empty:
+            g = pd.concat([g, pd.DataFrame([{
+                'Group': f"Other ({len(small)})",
+                'MV_AUD': small['MV_AUD'].sum(),
+                'Weight_%': small['Weight_%'].sum(),
+                'Positions': len(small)}])], ignore_index=True)
+        if include_cash and t['cash'] > 0:
+            denom = agg_w.attrs.get('denominator', 0)
+            g = pd.concat([g, pd.DataFrame([{
+                'Group': 'Cash', 'MV_AUD': t['cash'],
+                'Weight_%': t['cash'] / denom * 100 if denom else 0,
+                'Positions': 1}])], ignore_index=True)
+        g = g.sort_values('MV_AUD', ascending=False).reset_index(drop=True)
+        cmap = {'Cash': '#95a5a6'}
+        tip = ("💡 Click **Cash** (or any name) in the legend to hide that slice. "
+               "Labels keep their true weights from the selected basis — "
+               "use the toggle above for the official excl-cash numbers.")
+    else:
+        dim_col = {"Strategy Role": "Role", "Sector / Theme": "Theme",
+                   "Currency": "Currency", "Platform": "Platforms",
+                   "Region": "Region"}[dim]
+        g = Engine.group_weights(agg_w, dim_col,
+                                 cash_value=t['cash'],
+                                 include_cash_row=include_cash)
+        cmap = config.ROLE_COLORS if dim_col == 'Role' else None
+        tip = None
 
     c1, c2 = st.columns([3, 2])
     with c1:
         st.plotly_chart(Charts.pie(g, dim, denom_label, cmap),
                         use_container_width=True)
+        if tip:
+            st.caption(tip)
     with c2:
         show = g.copy()
         show['MV_AUD'] = show['MV_AUD'].map('${:,.0f}'.format)
@@ -554,6 +643,11 @@ def render_allocation(agg_w: pd.DataFrame, t: dict, denom_label: str, include_ca
         st.dataframe(show, use_container_width=True, hide_index=True, height=340)
         st.caption(f"Sum of weights: {g['Weight_%'].sum():.1f}% "
                    f"({'includes' if include_cash else 'excludes'} cash)")
+
+    if dim == "Holdings":
+        st.markdown("##### 🗺️ Portfolio map — size = value · colour = P&L")
+        st.plotly_chart(Charts.treemap(agg_w, t['cash'], include_cash),
+                        use_container_width=True)
 
 
 def render_current_vs_target(cvt: pd.DataFrame, roll: pd.DataFrame,
@@ -663,12 +757,14 @@ def render_positions(cvt: pd.DataFrame, fx_rates: dict):
         default='Hold')
 
     view = d[['Ticker', 'Role', 'Platforms', 'Shares', 'Avg_Cost_Native',
-              'Current_Price', 'Currency', 'MV_AUD', 'PnL_AUD', 'PnL_%',
-              'Weight_%', 'Target_%', 'Drift_%', 'Stop', 'Stop_Dist_%', 'Note']]
+              'Current_Price', 'Day_%', 'Currency', 'MV_AUD', 'PnL_AUD',
+              'PnL_%', 'Weight_%', 'Target_%', 'Drift_%', 'Stop',
+              'Stop_Dist_%', 'Note']]
 
     styled = view.style \
         .format({'Shares': '{:,.2f}', 'Avg_Cost_Native': '{:,.2f}',
-                 'Current_Price': '{:,.2f}', 'MV_AUD': '${:,.0f}',
+                 'Current_Price': '{:,.2f}', 'Day_%': '{:+.2f}%',
+                 'MV_AUD': '${:,.0f}',
                  'PnL_AUD': '${:,.0f}', 'PnL_%': '{:+.1f}%',
                  'Weight_%': '{:.2f}%', 'Target_%': '{:.2f}%',
                  'Drift_%': '{:+.2f}%', 'Stop': '{:,.2f}',
@@ -676,12 +772,13 @@ def render_positions(cvt: pd.DataFrame, fx_rates: dict):
         .apply(lambda col: ['color:#1a9655;font-weight:600' if isinstance(v, (int, float)) and v > 0
                             else 'color:#dc3545;font-weight:600' if isinstance(v, (int, float)) and v < 0
                             else '' for v in col],
-               subset=['PnL_AUD', 'PnL_%', 'Drift_%'])
+               subset=['Day_%', 'PnL_AUD', 'PnL_%', 'Drift_%'])
 
     st.dataframe(styled, use_container_width=True, height=480,
                  column_config={
                      'Ticker': 'Stock', 'Avg_Cost_Native': 'Avg Cost',
-                     'Current_Price': 'Price', 'MV_AUD': 'Mkt Val (AUD)',
+                     'Current_Price': 'Price', 'Day_%': 'Day %',
+                     'MV_AUD': 'Mkt Val (AUD)',
                      'PnL_AUD': 'P&L (AUD)', 'PnL_%': 'P&L %',
                      'Weight_%': 'Weight %', 'Target_%': 'Target %',
                      'Drift_%': 'Drift %', 'Stop_Dist_%': 'To Stop %'})
@@ -772,6 +869,25 @@ def render_risk(cvt: pd.DataFrame, t: dict, denom_label: str):
     cash_state = ("🟢 within band" if 5 <= cash_pct <= 15 else
                   ("🔴 below floor" if cash_pct < 5 else "🟡 above band"))
     m[3].metric("Cash buffer", f"{cash_pct:.1f}%", cash_state, delta_color="off")
+
+    # Second row: concentration statistics (computed on invested capital)
+    eq_total = cvt['MV_AUD'].sum()
+    if eq_total > 0:
+        shares_of_eq = cvt['MV_AUD'] / eq_total
+        hhi = float((shares_of_eq ** 2).sum())
+        eff_n = 1 / hhi if hhi > 0 else 0
+        usd_pct = cvt[cvt['Currency'] == 'USD']['MV_AUD'].sum() / denom * 100 if denom else 0
+        hhi_state = ("🟢 Diversified" if hhi < 0.10 else
+                     "🟡 Moderate" if hhi < 0.18 else "🔴 Concentrated")
+        m2 = st.columns(4)
+        m2[0].metric("HHI (invested)", f"{hhi:.3f}", hhi_state, delta_color="off")
+        m2[1].metric("Effective # positions", f"{eff_n:.1f}",
+                     f"of {len(cvt)} held", delta_color="off")
+        m2[2].metric("USD exposure", f"{usd_pct:.1f}%",
+                     "FX risk vs AUD", delta_color="off")
+        day_pnl = (cvt['Day_%'] / 100 * cvt['MV_AUD']).sum() if 'Day_%' in cvt.columns else 0
+        m2[3].metric("Today's move (est.)", f"${day_pnl:+,.0f}",
+                     "sum of position day changes", delta_color="off")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -901,7 +1017,7 @@ def main():
     cvt = Engine.current_vs_target(agg_w, t['cash'])
     roll = Engine.role_rollup(cvt, t['cash'], denominator, include_cash)
 
-    render_kpi_header(t, agg_w, fx_rate)
+    render_kpi_header(t, agg_w, fx_rates)
     st.markdown("---")
 
     tabs = st.tabs(["📊 Overview", "🥧 Allocation", "📋 Positions",
