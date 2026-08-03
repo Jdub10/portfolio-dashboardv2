@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DashboardConfig:
     SHEET_URL: str = "https://docs.google.com/spreadsheets/d/14IGIMj9iR5qOtmYT1e6FgN8t2tdQ5M1R_-hS6rw1RQs/export?format=csv"
+    # gid of the "History" tab (the number after '#gid=' in the sheet URL).
+    # Leave "" until the tab exists; the Performance tab shows setup steps.
+    HISTORY_GID: str = ""
     DEFAULT_FX_RATE: float = 0.66
     CACHE_TTL: int = 30
     YF_PERIOD: str = "5d"
@@ -180,6 +183,44 @@ class DataManager:
         except Exception as e:
             logger.error(f"Data loading error: {e}")
             st.error(f"⚠️ Failed to load portfolio data: {e}")
+            return pd.DataFrame()
+
+    @staticmethod
+    @st.cache_data(ttl=300, show_spinner=False)
+    def load_history() -> pd.DataFrame:
+        """Read the History tab (Date, Total_Value_AUD, Capital_Injected)."""
+        if not config.HISTORY_GID:
+            return pd.DataFrame()
+        try:
+            url = config.SHEET_URL + f"&gid={config.HISTORY_GID}"
+            h = pd.read_csv(url)
+            h.columns = h.columns.str.strip()
+            h['Date'] = pd.to_datetime(h['Date'], errors='coerce')
+            for c in ['Total_Value_AUD', 'Capital_Injected']:
+                h[c] = pd.to_numeric(h[c].astype(str).str.replace(',', ''),
+                                     errors='coerce')
+            h = h.dropna(subset=['Date', 'Total_Value_AUD', 'Capital_Injected'])
+            return h.sort_values('Date').reset_index(drop=True)
+        except Exception as e:
+            logger.error(f"History load error: {e}")
+            st.warning(f"⚠️ Could not load History tab: {e}")
+            return pd.DataFrame()
+
+    @staticmethod
+    @st.cache_data(ttl=600, show_spinner=False)
+    def load_price_history(tickers: tuple, fx_pairs: tuple) -> pd.DataFrame:
+        """1-year daily closes for the price-pulse section (10-min cache)."""
+        try:
+            data = yf.download(list(tickers) + list(fx_pairs), period='1y',
+                               progress=False)['Close']
+            if isinstance(data, pd.Series):
+                data = data.to_frame()
+            data = data.ffill()
+            if getattr(data.index, 'tz', None) is not None:
+                data.index = data.index.tz_localize(None)
+            return data
+        except Exception as e:
+            logger.error(f"Price history error: {e}")
             return pd.DataFrame()
 
     @staticmethod
@@ -383,6 +424,42 @@ class Engine:
         cvt.attrs['denominator'] = denom
         cvt.attrs['denominator_label'] = agg_w.attrs.get('denominator_label', '')
         return cvt
+
+    @staticmethod
+    def period_starts(now: pd.Timestamp) -> dict:
+        now = pd.Timestamp(now).normalize()
+        return {
+            'WTD': now - pd.Timedelta(days=now.weekday()),
+            'MTD': now.replace(day=1),
+            'QTD': now.replace(month=3 * ((now.month - 1) // 3) + 1, day=1),
+            'YTD': now.replace(month=1, day=1),
+            '1Y': now - pd.Timedelta(days=365),
+        }
+
+    @staticmethod
+    def chain_twr(snaps: pd.DataFrame, start: pd.Timestamp):
+        """Chain-linked time-weighted return from snapshot rows
+        (Date, Value, Capital). Capital changes between rows are treated as
+        external flows at the start of each sub-period — exact when deposits
+        are logged the day they land. Returns (twr_%, actual_start) or None."""
+        s = snaps.sort_values('Date').reset_index(drop=True)
+        if len(s) < 2:
+            return None
+        base_idx = s[s['Date'] <= start].index
+        if len(base_idx) == 0:
+            base_idx = [0]  # no snapshot before period start → measure from first
+        rows = s.loc[base_idx[-1]:].reset_index(drop=True)
+        if len(rows) < 2:
+            return None
+        growth = 1.0
+        for k in range(1, len(rows)):
+            v0, v1 = rows['Value'].iloc[k - 1], rows['Value'].iloc[k]
+            flow = rows['Capital'].iloc[k] - rows['Capital'].iloc[k - 1]
+            denom = v0 + flow
+            if denom <= 0:
+                return None
+            growth *= (v1 - v0 - flow) / denom + 1
+        return (growth - 1) * 100, rows['Date'].iloc[0]
 
     @staticmethod
     def role_rollup(cvt: pd.DataFrame, cash_value: float,
@@ -955,6 +1032,136 @@ def render_data_quality(raw: pd.DataFrame, cvt: pd.DataFrame, t: dict):
         st.balloons()
 
 
+def render_performance(t: dict, agg: pd.DataFrame, capital: float,
+                       fx_rates: dict, history: pd.DataFrame):
+    st.subheader("📈 Performance")
+
+    # ── Section 1: Account performance from snapshots ──────────────────────
+    st.markdown("##### Account performance (snapshot ledger)")
+    if history.empty:
+        st.info(
+            "**Setup (one time):**\n"
+            "1. In your Google Sheet, create a tab named **History** with columns "
+            "`Date | Total_Value_AUD | Capital_Injected` (dates as YYYY-MM-DD)\n"
+            "2. Paste in the starter rows from `portfolio_history.csv` and fill "
+            "the blank values from your broker statements\n"
+            "3. Open the History tab in your browser and copy the number after "
+            "`#gid=` in the URL\n"
+            "4. Paste it into `HISTORY_GID` at the top of this file and redeploy\n\n"
+            "From then on: add one row per review (your monthly gate is perfect), "
+            "and update `Capital_Injected` only when you deposit or withdraw. "
+            "**Official numbers remain IBKR PortfolioAnalyst** — this ledger is "
+            "the dashboard's honest approximation of it.")
+    else:
+        now = pd.Timestamp.now().normalize()
+        snaps = history.rename(columns={'Total_Value_AUD': 'Value',
+                                        'Capital_Injected': 'Capital'})
+        snaps = snaps[['Date', 'Value', 'Capital']].copy()
+        # Append live valuation as the closing point
+        live = pd.DataFrame([{'Date': now, 'Value': t['total'],
+                              'Capital': capital}])
+        snaps_live = pd.concat([snaps[snaps['Date'] < now], live],
+                               ignore_index=True)
+
+        cols = st.columns(6)
+        periods = Engine.period_starts(now)
+        periods['Since Start'] = snaps_live['Date'].min()
+        for i, (label, start) in enumerate(periods.items()):
+            res = Engine.chain_twr(snaps_live, start)
+            if res is None:
+                cols[i].metric(label, "—", "needs ≥2 snapshots",
+                               delta_color="off")
+            else:
+                twr, actual = res
+                note = (f"from {actual.strftime('%d %b %y')}"
+                        if actual > start + pd.Timedelta(days=3) else
+                        actual.strftime('%d %b %y'))
+                cols[i].metric(label, f"{twr:+.2f}%", note, delta_color="off")
+        st.caption("Time-weighted return, chain-linked between snapshots. "
+                   "Capital changes are treated as flows on the snapshot date — "
+                   "log deposits the day they land and this matches broker TWR. "
+                   "Periods starting before your first snapshot measure from that "
+                   "snapshot instead (noted under each figure).")
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=snaps_live['Date'], y=snaps_live['Value'],
+                                 name='Portfolio value', mode='lines+markers',
+                                 line=dict(color='#2E4053', width=2)))
+        fig.add_trace(go.Scatter(x=snaps_live['Date'], y=snaps_live['Capital'],
+                                 name='Capital injected', mode='lines',
+                                 line=dict(color='#95a5a6', width=2, dash='dot')))
+        fig.update_layout(height=320, margin=dict(t=20, b=20, l=0, r=0),
+                          legend=dict(orientation='h', y=1.1),
+                          plot_bgcolor='#ffffff',
+                          yaxis_tickformat='$,.0f')
+        st.plotly_chart(fig, use_container_width=True)
+
+        with st.expander("📒 Snapshot ledger"):
+            show = history.copy()
+            show['Date'] = show['Date'].dt.strftime('%Y-%m-%d')
+            st.dataframe(show, hide_index=True, use_container_width=True)
+
+    # ── Section 2: Price pulse of current holdings ─────────────────────────
+    st.markdown("---")
+    st.markdown("##### Price pulse — current holdings only")
+    st.caption("⚠️ Weighted **price** return of what you hold *today* "
+               "(weights = current share of invested capital). Ignores every "
+               "buy, sell and past holding — this is a market pulse, **not** "
+               "your account return. Use the ledger above / IBKR for that.")
+
+    tickers = tuple(sorted(agg['Ticker'].tolist()))
+    fx_pairs = tuple(sorted({f"AUD{c}=X" for c in agg['Currency'].dropna()
+                             if c and c != 'AUD'}))
+    hist = DataManager.load_price_history(tickers, fx_pairs)
+    if hist.empty:
+        st.warning("Price history unavailable right now.")
+        return
+
+    now = pd.Timestamp.now().normalize()
+    equity = agg['MV_AUD'].sum()
+    pulse_rows, per_pos = {}, {}
+    for label, start in Engine.period_starts(now).items():
+        total_r, covered = 0.0, 0.0
+        for _, r in agg.iterrows():
+            tk = r['Ticker']
+            if tk not in hist.columns:
+                continue
+            s = hist[tk].dropna()
+            cur = r['Currency'] or 'AUD'
+            if cur != 'AUD' and f"AUD{cur}=X" in hist.columns:
+                s = (hist[tk] / hist[f"AUD{cur}=X"]).dropna()
+            if s.empty:
+                continue
+            base_s = s[s.index < start]
+            base = base_s.iloc[-1] if not base_s.empty else s.iloc[0]
+            ret = (s.iloc[-1] / base - 1) * 100 if base > 0 else 0
+            w = r['MV_AUD'] / equity if equity else 0
+            total_r += w * ret
+            covered += w
+            per_pos.setdefault(tk, {})[label] = ret
+        pulse_rows[label] = (total_r / covered if covered > 0.5 else None,
+                             covered * 100)
+
+    cols = st.columns(5)
+    for i, (label, (val, cov)) in enumerate(pulse_rows.items()):
+        if val is None:
+            cols[i].metric(label, "—", "low data coverage", delta_color="off")
+        else:
+            cols[i].metric(label, f"{val:+.2f}%", f"{cov:.0f}% coverage",
+                           delta_color="off")
+
+    with st.expander("Per-position price returns"):
+        pp = pd.DataFrame(per_pos).T
+        pp.index.name = 'Ticker'
+        st.dataframe(pp.style.format('{:+.1f}%', na_rep='—')
+                     .apply(lambda col: ['color:#1a9655' if isinstance(v, (int, float)) and v > 0
+                                         else 'color:#dc3545' if isinstance(v, (int, float)) and v < 0
+                                         else '' for v in col]),
+                     use_container_width=True)
+        st.caption("Positions newer than a period show return since their first "
+                   "available price.")
+
+
 def render_download(cvt: pd.DataFrame, t: dict):
     st.subheader("📥 Export")
     out = cvt[['Ticker', 'Role', 'Sector', 'Currency', 'Platforms', 'Shares',
@@ -1020,22 +1227,24 @@ def main():
     render_kpi_header(t, agg_w, fx_rates)
     st.markdown("---")
 
-    tabs = st.tabs(["📊 Overview", "🥧 Allocation", "📋 Positions",
-                    "⚡ Execution", "🛡️ Risk", "🔍 Data Quality"])
+    tabs = st.tabs(["📊 Overview", "📈 Performance", "🥧 Allocation",
+                    "📋 Positions", "⚡ Execution", "🛡️ Risk", "🔍 Data Quality"])
 
     with tabs[0]:
         render_current_vs_target(cvt, roll, t, denominator, denom_label, include_cash)
         st.markdown("---")
         render_download(cvt, t)
     with tabs[1]:
-        render_allocation(agg_w, t, denom_label, include_cash)
+        render_performance(t, agg, capital, fx_rates, DataManager.load_history())
     with tabs[2]:
-        render_positions(cvt, fx_rates)
+        render_allocation(agg_w, t, denom_label, include_cash)
     with tabs[3]:
-        render_execution(cvt, roll, include_cash)
+        render_positions(cvt, fx_rates)
     with tabs[4]:
-        render_risk(cvt, t, denom_label)
+        render_execution(cvt, roll, include_cash)
     with tabs[5]:
+        render_risk(cvt, t, denom_label)
+    with tabs[6]:
         render_data_quality(df, cvt, t)
 
 
