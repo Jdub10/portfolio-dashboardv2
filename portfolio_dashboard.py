@@ -31,7 +31,7 @@ class DashboardConfig:
     SHEET_URL: str = "https://docs.google.com/spreadsheets/d/14IGIMj9iR5qOtmYT1e6FgN8t2tdQ5M1R_-hS6rw1RQs/export?format=csv"
     # gid of the "History" tab (the number after '#gid=' in the sheet URL).
     # Leave "" until the tab exists; the Performance tab shows setup steps.
-    HISTORY_GID: str = ""
+    HISTORY_GID: str = "1505843395"
     DEFAULT_FX_RATE: float = 0.66
     CACHE_TTL: int = 30
     YF_PERIOD: str = "5d"
